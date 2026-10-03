@@ -2,8 +2,8 @@
 
 `Guide` : un modèle généraliste (SmolVLM, Qwen2.5-VL) regarde la caméra et la carte vue de dessus.
 `GuideEntraine` : Qwen2.5-VL 3B en 4 bits + adaptateur LoRA (petites couches entraînées sur des vols)
-lit les faits de la carte en JSON. L'avis pèse dans la note des cibles avec un poids λ (planning.py) ;
-λ = 0 en mission finale. Lancé par `mission.py --guide ... --lam ...` ; bancs : experiments/12_guide.
+lit les faits de la carte en JSON. L'avis pèse dans la note des cibles avec un poids λ (planning.py).
+Lancé par `mission.py --guide ... --lam ...` ; bancs : experiments/12_guide.
 """
 
 from __future__ import annotations

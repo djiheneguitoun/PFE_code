@@ -146,8 +146,8 @@ Isaac Sim avec `timeout -s KILL`, car il ignore le signal d'arrêt normal.
 ## Limites connues
 
 - Tout se passe en simulation : aucun vol réel.
-- Le guide vision-langage n'est pas utilisé dans l'évaluation finale (λ = 0). Son gain mesuré
-  hors ligne a été obtenu sur le même entrepôt que son entraînement (voir l'étape 8).
+- Le gain du guide vision-langage mesuré hors ligne a été obtenu sur le même entrepôt que son
+  entraînement (voir l'étape 8).
 - Lors d'un premier vol sur l'entrepôt 9019, les trois drones sont tombés presque ensemble
   vers 400 s, sans collision. Le vol refait avec le même code n'a pas reproduit le problème,
   qui reste inexpliqué (voir l'étape 5, `../experiments/11_mission/`).

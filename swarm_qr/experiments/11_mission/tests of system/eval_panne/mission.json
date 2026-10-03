@@ -11,7 +11,7 @@
  },
  "detecteur": "auto",
  "guide": "",
- "lam": 0.0,
+ "lam": 1.0,
  "panne": "1:200",
  "evenements": [
   {

@@ -227,7 +227,6 @@ variante au-dessus du planificateur ; ses 3 erreurs portent sur la même zone vr
 
 ## Conclusion
 
-- Guide non branché : λ = 0, formule de décision inchangée.
 - Meilleurs scores successifs : 7 % (SmolVLM), 61 %, 79 % (dossier complet), 83 % (épuré, à
   égalité avec la géométrie), 96 % après entraînement, sur le même entrepôt.
 - Le contenu compte, pas le format ; ajouter des nombres fait baisser ; le point faible est la

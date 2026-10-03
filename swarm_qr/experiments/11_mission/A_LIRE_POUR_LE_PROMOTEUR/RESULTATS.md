@@ -115,7 +115,7 @@ par image selon le partage de la carte graphique entre rendu et détecteur.
 ### 4. Évaluation finale : les 4 vols de `tests of system/`
 
 Chiffres tirés de leurs `resultats.json`, sauf mention « mission.json ». 3 drones, 600 s au
-plus, détecteur branché, guide débranché (λ = 0), vidéo.
+plus, détecteur branché, vidéo.
 
 | Mesure | Nominal 9033 | Panne drone 1 à 200 s | Entrepôt 9019 | Obstacle à 200 s |
 |---|---|---|---|---|

@@ -10,7 +10,7 @@ aux drones une meilleure zone à visiter que le planificateur géométrique ?
 - Le « guide » reçoit la photo d'un drone, le plan vu de dessus et/ou un résumé texte de la
   carte, et désigne une des 6 zones candidates (et un côté d'abordage dans la 1re version).
 - Il conseille seulement : son avis ajoute λ × 10 points (λ × 5 de plus pour le bon côté) à la
-  note des cibles. λ = 0 le retire : c'est la valeur de l'évaluation finale.
+  note des cibles. λ = 0 le retire.
 - Tout se mesure hors ligne, sans simulateur, sur des « instantanés » écrits par `mission.py`
   pendant les vols de l'étape 5 (`<vol>/mission.json` et `<vol>/instantanes/`) : plan annoté,
   photos des drones, état de la carte, et la bonne réponse connue après coup (la zone qui
@@ -126,4 +126,3 @@ depuis `swarm_qr/`. `PY` est le Python de l'environnement (sur la machine de sim
 - Après entraînement LoRA : 96 % sur 72 cas jamais vus contre 83 % pour la géométrie
   (p = 0,035), mais sur le même entrepôt 9033 que l'entraînement, et la règle de 3 lignes y
   fait 100 %.
-- Le guide n'est pas branché (λ = 0) → détails dans `RESULTATS.md`.

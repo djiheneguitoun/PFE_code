@@ -26,7 +26,7 @@ réglages optiques que les caméras latérales du système.
   - **obstacle** : entrepôt 9033 ; un bloc de 1 × 1 × 2 m (x de −5,46 à −4,46 m, y de 3,5 à
     4,5 m) apparaît à 200,2 s.
 - Même règle d'arrêt : 120 s sans code nouveau, ou plan terminé (référence).
-- Système : détecteur YOLO branché, guide vision-langage débranché (`--lam 0.0`).
+- Système : détecteur YOLO branché.
 - Juges : `../analyse.py` (référence) et `../../11_mission/analyse.py` (système). Mêmes
   mesures : points dans la structure d'un rack (bouts vides exclus), distance entre drones au
   même instant.

@@ -39,7 +39,7 @@ absorbent une panne et terminent seuls la mission ? Ce dossier contient aussi
 
 ## L'évaluation finale : `tests of system/`
 
-4 vols, un par cas, 3 drones, guide vision-langage débranché :
+4 vols, un par cas, 3 drones :
 
 | Dossier | Cas |
 |---|---|
@@ -95,7 +95,7 @@ Un seul cas à la main, exactement comme le fait evaluation.sh (depuis le dossie
 `PY` étant le Python de l'environnement Isaac Sim) :
 
     cd swarm_qr
-    $PY mission.py --drones 3 --budget 600 --detecteur auto --video --lam 0.0 --seed 9033 --sortie experiments/11_mission/eval_nominal
+    $PY mission.py --drones 3 --budget 600 --detecteur auto --video --lam 1.0 --seed 9033 --sortie experiments/11_mission/eval_nominal
     $PY experiments/11_mission/analyse.py --dossier experiments/11_mission/eval_nominal
     $PY experiments/11_mission/video.py --dossier experiments/11_mission/eval_nominal --sans-images
 

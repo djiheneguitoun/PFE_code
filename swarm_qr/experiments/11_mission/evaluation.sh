@@ -10,8 +10,8 @@ SQ="$ICI/../.."
 PY=~/isaac5_env/bin/python
 # écran virtuel :1 (Isaac Sim, fenêtres SITL), sorties non tamponnées
 export DISPLAY=:1 PYTHONUNBUFFERED=1
-# guide vision-langage débranché (poids λ = 0)
-OPT="--lam 0.0"
+# poids du guide λ = 1 ; sans option --guide, aucun guide n'est chargé
+OPT="--lam 1.0"
 # préfixe des dossiers de sortie : eval_<cas>
 TAG="eval"
 # Vole un cas (coupé après 2 h), puis écrit son bilan (analyse.py) et ses vidéos (video.py, images effacées ensuite).

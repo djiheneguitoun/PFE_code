@@ -25,7 +25,7 @@ système, lui, **décide en vol** à partir de la carte partagée.
   zxing et le détecteur YOLO.
 - Règles d'arrêt : 95 % des codes lus suivis de 60 s de grâce, 120 s sans code nouveau, ou
   plan terminé (référence).
-- Système : détecteur YOLO branché, guide vision-langage débranché (λ = 0).
+- Système : détecteur YOLO branché.
 - Le jugement est fait après coup par un arbitre qui connaît la vérité (position et contenu
   de chaque QR) : `../experiments/11_mission/analyse.py` et `../experiments/13_pore/analyse.py`.
 - Les temps sont des temps simulés comptés depuis le lancement, décollage compris.
