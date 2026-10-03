@@ -1,4 +1,9 @@
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+// Scénario ns-3 « 5G entre drones » (module 5G-LENA) : une antenne 5G fixe (gNB), chaque drone est un terminal
+// (UE) à position figée lue dans un CSV ; trafic UDP entre chaque paire pendant 2 s simulées, puis écrit par paire
+// RSSI de chaque drone, latence, gigue et distance. Lancé par scripts/09_5g_lena_bridge.py (et 12_ns3_bridge.py).
+// À copier dans scratch/ de ns-3.40 (module contrib/nr installé), puis depuis ~/ns-allinone-3.40/ns-3.40 :
+//   ./ns3 build && ./ns3 run "drone-5g-nr-scenario --posFile=/tmp/drone_positions.csv"
 
 
 #include "ns3/antenna-module.h"
@@ -22,8 +27,11 @@
 using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("Drone5gNr");
 
+// Numéro et position (m) d'un drone
 struct DronePos { int id; double x, y, z; };
 
+// Lit le CSV des positions (lignes id,x,y,z ou t,id,x,y,z ; lignes vides, « # » et en-tête « drone_id » ignorés)
+// et renvoie la dernière position de chaque drone, triée par numéro (vide si le fichier est illisible).
 std::vector<DronePos> ReadPositions(const std::string& path)
 {
     std::map<int, DronePos> latest;
@@ -49,8 +57,12 @@ std::vector<DronePos> ReadPositions(const std::string& path)
     return res;
 }
 
+// Construit le réseau 5G (1 gNB, 1 UE par drone), envoie du trafic UDP entre chaque paire pendant simTime,
+// puis écrit RSSI, latence et gigue par paire dans outFile et les affiche en tableau.
 int main(int argc, char* argv[])
 {
+    // Valeurs par défaut des options : fichiers, durée simulée (s), puissance du gNB (dBm),
+    // fréquence et largeur de bande (Hz), position du gNB (m), graine aléatoire (0 = tirée de l'horloge)
     std::string posFile = "/tmp/drone_positions.csv";
     std::string outFile = "/tmp/drone_5g_metrics.csv";
     double simTimeSec = 2.0;
@@ -71,10 +83,12 @@ int main(int argc, char* argv[])
     cmd.AddValue("seed","RNG seed (0=auto)",seed);
     cmd.Parse(argc, argv);
 
+    // Graine 0 : tirée de l'heure, donc résultats différents à chaque lancement
     if (seed == 0) seed = static_cast<uint32_t>(std::time(nullptr)) % 100000;
     RngSeedManager::SetSeed(seed);
     RngSeedManager::SetRun(seed);
 
+    // Le trafic démarre à 0,4 s, le temps que les terminaux s'attachent au réseau
     Time simTime  = Seconds(simTimeSec);
     Time appStart = MilliSeconds(400);
 
@@ -101,6 +115,8 @@ int main(int argc, char* argv[])
         ueNodes.Get(i)->GetObject<MobilityModel>()->SetPosition(Vector(drones[i].x,drones[i].y,drones[i].z));
 
     // 3. Stack 5G NR + EPC (coeur 5G)
+    // Faisceaux idéaux (orientés vers le trajet direct) ; une bande de `bw` Hz autour de `frequency`,
+    // canal 3GPP « bureau ouvert en intérieur » (InH_OfficeOpen)
     auto epcHelper = CreateObject<NrPointToPointEpcHelper>();
     auto bfHelper  = CreateObject<IdealBeamformingHelper>();
     auto nrHelper  = CreateObject<NrHelper>();
@@ -111,6 +127,7 @@ int main(int argc, char* argv[])
     CcBwpCreator::SimpleOperationBandConf bandConf(frequency,bw,1,BandwidthPartInfo::InH_OfficeOpen);
     OperationBandInfo band = ccBwp.CreateOperationBandContiguousCc(bandConf);
 
+    // Canal figé pendant toute la simulation (période de mise à jour 0 = jamais), avec ombrage aléatoire
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod",TimeValue(MilliSeconds(0)));
     nrHelper->SetChannelConditionModelAttribute("UpdatePeriod",TimeValue(MilliSeconds(0)));
     nrHelper->SetPathlossAttribute("ShadowingEnabled",BooleanValue(true));
@@ -118,7 +135,11 @@ int main(int argc, char* argv[])
     auto allBwps = CcBwpCreator::GetAllBwps({band});
 
     bfHelper->SetAttribute("BeamformingMethod",TypeIdValue(DirectPathBeamforming::GetTypeId()));
+    // Délai de 2 ms sur le lien entre le gNB et le cœur de réseau
     epcHelper->SetAttribute("S1uLinkDelay",TimeValue(MilliSeconds(2)));
+
+    // Antennes : réseau de 4 × 8 éléments pour le gNB, 2 × 4 pour chaque drone ; tout le trafic
+    // « faible latence » (NGBR_LOW_LAT_EMBB) sur la seule partie de bande ; tampon RLC quasi illimité
 
     nrHelper->SetGnbAntennaAttribute("NumRows",UintegerValue(4));
     nrHelper->SetGnbAntennaAttribute("NumColumns",UintegerValue(8));
@@ -134,6 +155,7 @@ int main(int argc, char* argv[])
     NetDeviceContainer gnbDev = nrHelper->InstallGnbDevice(gnbNodes,allBwps);
     NetDeviceContainer ueDev  = nrHelper->InstallUeDevice(ueNodes,allBwps);
     int64_t s=1; s+=nrHelper->AssignStreams(gnbDev,s); s+=nrHelper->AssignStreams(ueDev,s);
+    // Numérologie 1 : sous-porteuses espacées de 30 kHz ; puissance d'émission du gNB en dBm
     nrHelper->GetGnbPhy(gnbDev.Get(0),0)->SetAttribute("Numerology",UintegerValue(1));
     nrHelper->GetGnbPhy(gnbDev.Get(0),0)->SetAttribute("TxPower",DoubleValue(gnbTxPower));
     for (auto it=gnbDev.Begin();it!=gnbDev.End();++it) DynamicCast<NrGnbNetDevice>(*it)->UpdateConfig();
@@ -151,6 +173,7 @@ int main(int argc, char* argv[])
     nrHelper->AttachToClosestEnb(ueDev,gnbDev);
 
     // 6. Trafic UDP entre chaque PAIRE de drones (A -> gNB -> EPC -> gNB -> B)
+    // Paquets de 500 octets toutes les 10 ms, de a vers b (a < b), un port par paire à partir de 5000
     uint16_t basePort = 5000;
     ApplicationContainer servers, clients;
     // On stocke le mapping port -> (a,b) pour retrouver les paires apres
@@ -196,6 +219,8 @@ int main(int argc, char* argv[])
     Simulator::Run();
 
     // 9. RSSI 
+    // RSSI de chaque drone (gNB -> drone, en dBm), recalculé à part avec le modèle 3GPP de bureau en
+    // intérieur, ombrage compris (tirage aléatoire) : il ne vient pas des paquets simulés
     auto plModel = CreateObject<ThreeGppIndoorOfficePropagationLossModel>();
     plModel->SetAttribute("Frequency", DoubleValue(frequency));
     plModel->SetAttribute("ShadowingEnabled", BooleanValue(true));
@@ -213,6 +238,7 @@ int main(int argc, char* argv[])
     std::map<Ipv4Address,uint32_t> ipIdx;
     for (uint32_t i=0;i<nUe;i++) ipIdx[ueIp.GetAddress(i)]=i;
 
+    // Résultat d'une paire : latence et gigue (variation du délai) moyennes en ms, paquets reçus ; -1 = aucun paquet
     struct PR { double lat=-1,jit=0; uint32_t rx=0; };
     std::map<std::pair<uint32_t,uint32_t>,PR> pairRes;
 
@@ -229,6 +255,7 @@ int main(int argc, char* argv[])
         }
     }
 
+    // Écrit une ligne par paire dans le CSV de sortie et l'affiche en tableau dans le terminal
     std::ofstream out(outFile);
     out << "drone_a,drone_b,rssi_a_dBm,rssi_b_dBm,latency_ms,jitter_ms,dist_ab_m,rx_packets\n";
 

@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
+# Phase 11 : lance 11_isaac_sim_drones.py (N drones Iris posés dans un entrepôt Isaac Sim + Pegasus).
+# Vérifie d'abord l'écran X11 (sinon mode sans fenêtre), le GPU NVIDIA et les imports isaacsim / pegasus.
+# Usage : bash scripts/11_launch_isaac_sim_drones.sh [N_DRONES]   (3 par défaut ; HEADLESS=1 force le mode sans fenêtre)
+# Prérequis : environnement ~/isaac_sim_env créé par install_isaac_sim.sh (racine du projet).
 
 set -euo pipefail
 
+# Nombre de drones (1er argument, 3 par défaut).
 N_DRONES=${1:-3}
+# Environnement Python d'Isaac Sim et son script d'activation (créés par install_isaac_sim.sh).
 VENV_DIR="${HOME}/isaac_sim_env"
 ACTIVATE_SCRIPT="${VENV_DIR}/activate_isaac.sh"
+# Racine du projet (dossier parent de scripts/).
 WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Affiche un message d'information.
 log()  { echo "[INFO] $*"; }
+# Affiche un avertissement.
 warn() { echo "[WARN] $*"; }
+# Affiche une erreur puis arrête le script (code 1).
 die()  { echo "[ERROR] $*"; exit 1; }
 
-# --- Auto-detect display ---
+# --- Écran : si DISPLAY ne répond pas, essaie les écrans X11 existants ; sinon mode sans fenêtre ---
 if [[ -z "${HEADLESS:-}" ]]; then
     if xdpyinfo -display "${DISPLAY:-}" >/dev/null 2>&1; then
         HEADLESS=0
@@ -58,6 +68,7 @@ if [[ "${HEADLESS}" == "1" ]]; then
 fi
 log "Lancement : ${N_DRONES} drone(s), mode $([ "${HEADLESS}" == "1" ] && echo headless || echo GUI)"
 
+# Force le pilote graphique NVIDIA et accepte la licence d'Omniverse sans question.
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 export OMNI_KIT_ACCEPT_EULA=YES

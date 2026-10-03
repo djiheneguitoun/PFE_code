@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Lecture de QR codes par les caméras des drones dans Isaac Sim (utilisé par 12_aif_isaac_sim.py, étape 12).
+
+Génère une image QR, la colle sur un panneau dans la scène, ajoute une caméra à l'avant de chaque drone, capture
+des images à intervalle régulier et les décode dans un fil d'exécution séparé (pyzbar, sinon OpenCV).
+État écrit dans <output_dir>/qr_state.json (lu par le tableau de bord) ; images dans <output_dir>/camera_frames/.
+"""
 from __future__ import annotations
 
 import math
@@ -17,6 +23,7 @@ from PIL import Image
 
 
 class QRCodeGenerator:
+    """Fabrique l'image PNG d'un QR code (correction d'erreur maximale, niveau H)."""
 
     def generate(
         self,
@@ -25,6 +32,7 @@ class QRCodeGenerator:
         box_size: int = 20,
         border: int = 2,
     ) -> str:
+        """Enregistre le QR de `data` en PNG (`box_size` pixels par carré, marge de `border` carrés) et renvoie le chemin absolu."""
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         qr = qrcode.QRCode(
@@ -46,6 +54,7 @@ class QRCodeGenerator:
 
 
 class QRCodePanel:
+    """Panneau carré portant l'image du QR, posé debout dans la scène USD."""
 
     def __init__(
         self,
@@ -54,6 +63,7 @@ class QRCodePanel:
         size: float = 1.5,
         prim_path: str = "/World/QRCodePanel",
     ):
+        """Mémorise l'image, la position du centre (m) et le côté du panneau (m), puis crée le panneau."""
         self.qr_image_path = os.path.abspath(qr_image_path)
         self.position = position
         self.size = size
@@ -61,6 +71,7 @@ class QRCodePanel:
         self._create()
 
     def _create(self):
+        """Crée le carré (maillage USD), le place debout face à +Y et lui applique l'image du QR comme texture."""
         import omni.usd
         from pxr import Gf, Sdf, UsdGeom, UsdShade
 
@@ -142,6 +153,7 @@ class QRCodePanel:
 
 
 class DroneCameraReader:
+    """Caméra fixée à l'avant d'un drone, qui fournit ses images en couleur."""
 
     def __init__(
         self,
@@ -150,6 +162,7 @@ class DroneCameraReader:
         resolution: Tuple[int, int] = (640, 480),
         focal_length: float = 24.0,
     ):
+        """Crée la caméra sous le drone `drone_prim_path` (résolution en pixels, focale en mm)."""
         self.drone_id = drone_id
         self.cam_prim_path = f"{drone_prim_path}/body/Camera_{drone_id}"
         self.resolution = resolution
@@ -159,6 +172,7 @@ class DroneCameraReader:
         self._create_camera(drone_prim_path, focal_length)
 
     def _create_camera(self, drone_prim_path: str, focal_length: float):
+        """Ajoute la caméra USD (focale limitée à 18 mm : grand champ), 15 cm devant le drone, tournée vers +Y et relevée de 10°."""
         import omni.usd
         from pxr import Gf, UsdGeom
 
@@ -179,6 +193,7 @@ class DroneCameraReader:
               f"(front-facing +Y, 10° up tilt, wide FOV)")
 
     def initialize(self):
+        """Branche la caméra au moteur de rendu (omni.replicator) pour lire ses images ; à appeler après world.reset()."""
         try:
             import omni.replicator.core as rep
 
@@ -194,6 +209,7 @@ class DroneCameraReader:
             self._annotator = None
 
     def get_frame(self) -> Optional[np.ndarray]:
+        """Renvoie la dernière image de la caméra au format BGR d'OpenCV, ou None si elle n'est pas disponible."""
         if self._annotator is None:
             return None
         try:
@@ -209,8 +225,10 @@ class DroneCameraReader:
 
 
 class QRResultCache:
+    """Mémoire du dernier QR décodé, considéré valable pendant `ttl_seconds` s (3 s par défaut)."""
 
     def __init__(self, ttl_seconds: float = 3.0):
+        """Crée un cache vide, valable `ttl_seconds` s, protégé par un verrou (plusieurs fils d'exécution y accèdent)."""
         self._lock = threading.Lock()
         self._data: Optional[str] = None
         self._timestamp: float = 0.0
@@ -219,11 +237,13 @@ class QRResultCache:
         self._miss_count = 0
 
     def put(self, data: str):
+        """Enregistre le dernier texte décodé et l'heure de la lecture."""
         with self._lock:
             self._data = data
             self._timestamp = time.monotonic()
 
     def get(self) -> Optional[str]:
+        """Renvoie le dernier texte décodé s'il date de moins de `ttl` s, sinon None ; compte succès et échecs."""
         with self._lock:
             if self._data is None:
                 self._miss_count += 1
@@ -236,6 +256,7 @@ class QRResultCache:
             return None
 
     def stats(self) -> Dict[str, Any]:
+        """Renvoie un résumé du cache : texte gardé, durée de validité, succès, échecs et âge (s)."""
         with self._lock:
             return {
                 "cached_data": self._data,
@@ -248,6 +269,7 @@ class QRResultCache:
 
 
 def decode_pyzbar(image: np.ndarray) -> Optional[str]:
+    """Essaie de décoder un QR avec pyzbar ; renvoie le texte du premier QR trouvé, ou None."""
     try:
         from pyzbar.pyzbar import decode as pyzbar_decode
         results = pyzbar_decode(image)
@@ -259,6 +281,7 @@ def decode_pyzbar(image: np.ndarray) -> Optional[str]:
 
 
 def decode_opencv(image: np.ndarray) -> Optional[str]:
+    """Essaie de décoder un QR avec le détecteur d'OpenCV ; renvoie le texte, ou None."""
     try:
         detector = cv2.QRCodeDetector()
         data, points, _ = detector.detectAndDecode(image)
@@ -270,6 +293,7 @@ def decode_opencv(image: np.ndarray) -> Optional[str]:
 
 
 def decode_qr_multi(image: np.ndarray) -> Tuple[Optional[str], str]:
+    """Décode avec pyzbar puis, en cas d'échec, avec OpenCV ; renvoie (texte ou None, nom de la méthode)."""
     # pyzbar d'abord (plus robuste), puis fallback OpenCV
     result = decode_pyzbar(image)
     if result is not None:
@@ -284,6 +308,7 @@ def decode_qr_multi(image: np.ndarray) -> Tuple[Optional[str], str]:
 
 @dataclass
 class FrameInfo:
+    """Image capturée par un drone, en attente de décodage (n° de drone, tick, image, fichier enregistré)."""
     drone_id: int
     tick: int
     image: np.ndarray
@@ -293,6 +318,7 @@ class FrameInfo:
 
 @dataclass
 class DroneDetectionRecord:
+    """Bilan des lectures de QR d'un drone : dernier résultat et compteurs."""
     drone_id: int
     last_status: str = "none"
     last_data: Optional[str] = None
@@ -305,6 +331,7 @@ class DroneDetectionRecord:
     last_timestamp: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
+        """Renvoie le bilan sous forme de dictionnaire (pour le JSON), avec le taux de réussite en %."""
         return {
             "drone_id": self.drone_id,
             "last_status": self.last_status,
@@ -320,6 +347,7 @@ class DroneDetectionRecord:
 
 
 class FrameCaptureHelper:
+    """Capture une image de chaque caméra tous les `capture_interval` pas de simulation et la met en file de décodage."""
 
     def __init__(
         self,
@@ -328,6 +356,7 @@ class FrameCaptureHelper:
         output_dir: str,
         capture_interval: int = 5,
     ):
+        """Mémorise caméras, file et dossier de sortie, et crée un sous-dossier drone_<id> par caméra."""
         self.cameras = cameras
         self.frame_queue = frame_queue
         self.output_dir = output_dir
@@ -340,11 +369,13 @@ class FrameCaptureHelper:
             os.makedirs(drone_dir, exist_ok=True)
 
     def tick(self):
+        """Compte un pas de simulation et déclenche une capture tous les `capture_interval` pas."""
         self._tick += 1
         if self._tick % self.capture_interval == 0:
             self.capture_once()
 
     def capture_once(self):
+        """Enregistre l'image de chaque caméra (PNG numéroté + latest_drone_<id>.jpg) et la met en file ; file pleine : jette la plus ancienne."""
         for cam in self.cameras:
             frame = cam.get_frame()
             if frame is None:
@@ -384,6 +415,7 @@ class FrameCaptureHelper:
 
 
 class QRDecoderThread(threading.Thread):
+    """Fil d'exécution qui décode les images en file, tient les compteurs par drone et écrit qr_state.json."""
 
     def __init__(
         self,
@@ -392,6 +424,7 @@ class QRDecoderThread(threading.Thread):
         output_dir: str = "/tmp",
         drone_ids: Optional[List[int]] = None,
     ):
+        """Prépare la file, le cache, le dossier de sortie et un bilan vide par drone (fil non démarré)."""
         super().__init__(daemon=True, name="QRDecoderThread")
         self.frame_queue = frame_queue
         self.cache = cache
@@ -410,6 +443,7 @@ class QRDecoderThread(threading.Thread):
     def _annotate_and_save(self, image: np.ndarray, drone_id: int,
                            success: bool, data: Optional[str],
                            method: str) -> str:
+        """Dessine le résultat sur une copie de l'image (contour vert et texte si lu, cadre rouge sinon), l'enregistre et renvoie son chemin."""
         annotated = image.copy()
         h, w = annotated.shape[:2]
 
@@ -452,6 +486,7 @@ class QRDecoderThread(threading.Thread):
         return out_path
 
     def run(self):
+        """Boucle du fil : prend une image, la décode, met à jour cache et bilans, enregistre l'image annotée et l'état JSON."""
         print("[QR-DECODER] Thread started")
         while not self._stop_event.is_set():
             try:
@@ -510,6 +545,7 @@ class QRDecoderThread(threading.Thread):
                     print(f"[QR-DECODER] ✗ Decode failed drone {info.drone_id}, "
                           f"{tag} (fails={self._failed_count}/{self._total_count})")
 
+            # Historique des 500 derniers essais ; « cached » : image non lue mais un résultat récent était en mémoire
             with self._lock:
                 self._detection_history.append({
                     "tick": info.tick,
@@ -532,6 +568,7 @@ class QRDecoderThread(threading.Thread):
               f"total={self._total_count})")
 
     def _write_state_json(self):
+        """Écrit l'état (compteurs, cache, bilans par drone, 100 derniers essais) dans qr_state.json via un fichier temporaire."""
         try:
             with self._lock:
                 state = {
@@ -555,10 +592,12 @@ class QRDecoderThread(threading.Thread):
             pass
 
     def stop(self):
+        """Demande l'arrêt du fil et attend sa fin (5 s au plus)."""
         self._stop_event.set()
         self.join(timeout=5.0)
 
     def stats(self) -> Dict[str, Any]:
+        """Renvoie les compteurs globaux, la taille de la file, le cache et le bilan par drone (sauvés dans qr_stats.json)."""
         with self._lock:
             return {
                 "decoded": self._decoded_count,
@@ -582,6 +621,7 @@ def setup_qr_system(
     capture_interval: int = 5,
     camera_resolution: Tuple[int, int] = (640, 480),
 ) -> Dict[str, Any]:
+    """Crée tout le système QR (image, panneau, caméras, file de 50 images, cache, capture, décodeur non démarré) et renvoie ces objets."""
     gen = QRCodeGenerator()
     qr_image_path = gen.generate(
         qr_data, os.path.join(output_dir, "qr_code.png")
@@ -623,6 +663,7 @@ def setup_qr_system(
 
 
 def initialize_cameras(cameras: List[DroneCameraReader]):
+    """Branche chaque caméra au rendu (à appeler après la remise à zéro du monde)."""
     for cam in cameras:
         cam.initialize()
     print(f"[QR] {len(cameras)} cameras initialized")

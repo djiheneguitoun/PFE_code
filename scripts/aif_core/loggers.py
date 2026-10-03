@@ -1,3 +1,9 @@
+"""Écriture des sorties de la simulation AIF, mises à jour à chaque pas.
+
+DataLogger : aif_state.json (état courant) et aif_history.json (métriques de tous les pas), lus en direct par
+le tableau de bord dashboard_aif. DiagnosticLogger : journal texte détaillé aif_diagnostic.log.
+Les trois fichiers vont dans cfg.output_dir (/tmp par défaut) et sont écrasés à chaque lancement.
+"""
 from __future__ import annotations
 
 import json
@@ -10,17 +16,21 @@ import numpy as np
 
 
 class DataLogger:
+    """Écrit l'état courant et l'historique de la simulation en JSON, pour le tableau de bord."""
     def __init__(self, output_dir: str = "/tmp"):
+        """Prépare les chemins de aif_state.json et aif_history.json, et vide l'historique."""
         self.state_path = os.path.join(output_dir, "aif_state.json")
         self.history_path = os.path.join(output_dir, "aif_history.json")
         self._write(self.history_path, [])
 
     def log(self, state: Dict, history: List[Dict]) -> None:
+        """Réécrit les deux fichiers JSON (état courant et historique complet)."""
         self._write(self.state_path, state)
         self._write(self.history_path, history)
 
     @staticmethod
     def _write(path: str, data: Any) -> None:
+        """Écrit le JSON dans un fichier temporaire puis le renomme : le lecteur ne voit jamais un fichier à moitié écrit."""
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f, separators=(",", ":"))
@@ -28,8 +38,10 @@ class DataLogger:
 
 
 class DiagnosticLogger:
+    """Journal texte détaillé (aif_diagnostic.log) : scans lidar, actions candidates, cartes, bilan de chaque pas."""
 
     def __init__(self, output_dir: str, cfg):
+        """Crée le journal et y écrit l'en-tête (principaux réglages de la simulation)."""
         self.cfg = cfg
         self.log_path = os.path.join(output_dir, "aif_diagnostic.log")
         with open(self.log_path, "w") as f:
@@ -51,16 +63,20 @@ class DiagnosticLogger:
         print(f"[INFO] Diagnostic log → {self.log_path}")
 
     def _w(self, text: str) -> None:
+        """Ajoute du texte à la fin du journal."""
         with open(self.log_path, "a") as f:
             f.write(text)
 
     def log_step_header(self, step: int) -> None:
+        """Écrit le titre d'un nouveau pas de décision (numéro et heure)."""
         self._w(f"\n{'━' * 90}\n")
         self._w(f"  STEP {step}   ({time.strftime('%H:%M:%S')})\n")
         self._w(f"{'━' * 90}\n")
 
     def log_lidar(self, drone_id: int, pos_x: float, pos_y: float,
                   angles: np.ndarray, ranges: np.ndarray, hits: np.ndarray) -> None:
+        """Écrit le résumé d'un scan lidar : nombre d'impacts, 5 obstacles les plus proches, le plus proche par quart
+        (avant, droite, arrière, gauche)."""
         n_total = len(hits)
         n_hits = int(hits.sum())
         pct = n_hits / max(n_total, 1) * 100.0
@@ -100,6 +116,7 @@ class DiagnosticLogger:
     def log_candidates(self, drone_id: int, pos_x: float, pos_y: float,
                        others: List[Tuple[float, float]],
                        cand: List[Dict], selected_idx: int) -> None:
+        """Écrit le tableau des 9 actions candidates d'un drone (valide ou non, raison, IG, frontière, G) et l'action choisie."""
         self._w(f"\n  ┌─ DRONE {drone_id}  Action Selection  pos=({pos_x:.2f}, {pos_y:.2f})\n")
         if others:
             self._w(f"  │  Other drones:\n")
@@ -128,6 +145,7 @@ class DiagnosticLogger:
         self._w(f"  └{'─' * 60}\n")
 
     def log_belief(self, drone_id: int, belief, fused=None) -> None:
+        """Écrit l'état de la carte d'un drone (entropie, couverture, cases occupées / libres / incertaines) et de sa carte de planification."""
         total = belief.width * belief.height
         occ = int((belief.probability >= self.cfg.occ_threshold).sum())
         free = int((belief.probability < 0.3).sum())
@@ -146,6 +164,8 @@ class DiagnosticLogger:
         self._w(f"  └{'─' * 60}\n")
 
     def log_step_summary(self, step: int, agents, fused) -> None:
+        """Écrit le bilan du pas : positions, distances entre drones, alertes (mur proche, deux drones dans la même case),
+        couverture de la carte fusionnée."""
         self._w(f"\n  ── Step {step} Summary ──\n")
         for a in agents:
             arrived = ""

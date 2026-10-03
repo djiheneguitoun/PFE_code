@@ -1,13 +1,8 @@
-"""Inspection LECTURE SEULE de l'entrepôt USD.
+"""Décrit la construction de l'entrepôt USD (nombre de maillages, les 15 plus gros, dimensions), en lecture seule.
 
-Ne modifie AUCUN fichier et ne touche PAS à l'environnement. Sert uniquement à
-voir comment l'entrepôt USD est construit (nombre de meshes, leur taille,
-dimensions) pour choisir la meilleure façon de donner un LiDAR au drone dans CE
-vrai environnement.
-
+Sert à choisir comment donner un LiDAR au drone dans ce vrai entrepôt ; ne modifie aucun fichier.
 Lancement :
-  cd ~/IsaacLab
-  ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/inspect_usd.py --headless
+  cd ~/IsaacLab && ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/diag/inspect_usd.py --headless
 """
 
 import argparse
@@ -24,6 +19,7 @@ import os  # noqa: E402
 import omni.usd  # noqa: E402
 from pxr import Usd, UsdGeom  # noqa: E402
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"

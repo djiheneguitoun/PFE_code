@@ -1,7 +1,8 @@
-"""Analyse du banc du contrôleur — étape 3. Aucun simulateur.
+"""Analyse du banc du contrôleur (étape 3), sans simulateur.
 
-Lit ce qui existe dans le dossier — freinage.json, poses.jsonl, essaim.json — et produit
-resultats.json plus les figures. Toutes les durées sont en secondes simulées.
+Lit ce qui existe dans le dossier (freinage.json, poses.jsonl, essaim.json) ; écrit resultats.json,
+freinage.png, cycles.png et essaim.png. Toutes les durées sont en secondes simulées.
+Lancement : python analyse.py   (numpy et matplotlib suffisent)
 """
 
 from __future__ import annotations
@@ -17,16 +18,20 @@ IMMOBILE = 0.10          # m/s ; en dessous, le drone est considéré arrêté
 
 
 def mediane(xs, digits=2):
+    """Renvoie la médiane arrondie à `digits` décimales, ou None si la liste est vide."""
     return round(float(np.median(xs)), digits) if len(xs) else None
 
 
 def p90(xs, digits=2):
+    """Renvoie le 90e centile arrondi (9 valeurs sur 10 sont en dessous), ou None si la liste est vide."""
     return round(float(np.percentile(xs, 90)), digits) if len(xs) else None
 
 
 # ---------------------------------------------------------------- freinage
 
 def metriques_freinage(run, cible, depart, tol):
+    """Mesure un essai de freinage : temps d'entrée dans la tolérance et d'arrêt (s), glissade au-delà
+    de la cible, erreurs et dérive pendant la tenue (m), sorties de tolérance."""
     traj = np.array([r[:7] for r in run["traj"]], float)
     t = traj[:, 0] - traj[0, 0]
     p = traj[:, 1:4]
@@ -36,17 +41,20 @@ def metriques_freinage(run, cible, depart, tol):
     au_dela = (p - cible) @ axe
     vitesse = np.linalg.norm(v, axis=1)
     phases = [r[7] for r in run["traj"]]
+    # k_fin : premier pas où le contrôleur se déclare « atteint » ou « abandon » ; la glissade
+    # au-delà de la cible se mesure jusqu'à 1 s après.
     k_fin = next((k for k, ph in enumerate(phases) if ph in ("atteint", "abandon")), None)
     fenetre = t <= (t[k_fin] + 1.0 if k_fin is not None else t[-1])
     dedans = err < tol
     t_arrivee = float(t[dedans][0]) if dedans.any() else None
+    # t_stab : instant à partir duquel la vitesse reste sous 0,10 m/s jusqu'à la fin.
     lent = vitesse < IMMOBILE
     t_stab = None
     for k in range(len(t)):
         if lent[k:].all():
             t_stab = float(t[k])
             break
-    sorties = int(np.sum(dedans[:-1] & ~dedans[1:]))
+    sorties = int(np.sum(dedans[:-1] & ~dedans[1:]))     # fois où le drone ressort de la tolérance
     return {"loi": run["loi"], "rep": run["rep"],
             "t_arrivee": round(t_arrivee, 2) if t_arrivee is not None else None,
             "t_stabilisation": round(t_stab, 2) if t_stab is not None else None,
@@ -58,6 +66,7 @@ def metriques_freinage(run, cible, depart, tol):
 
 
 def volet_freinage(res):
+    """Résume freinage.json par loi (médianes des 3 essais), l'ajoute à `res` et trace freinage.png."""
     f = HERE / "freinage.json"
     if not f.exists():
         return
@@ -94,6 +103,7 @@ def volet_freinage(res):
 
 
 def figure_freinage(d, cible):
+    """Trace freinage.png : distance à la cible et vitesse au cours du temps, pour chaque essai."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -123,6 +133,8 @@ def figure_freinage(d, cible):
 # ---------------------------------------------------------------- poses
 
 def volet_poses(res):
+    """Résume poses.jsonl : arrivées, erreurs, temps de cycle (même allée ou par le couloir) et
+    lectures ; trace cycles.png."""
     f = HERE / "poses.jsonl"
     if not f.exists():
         return
@@ -140,6 +152,8 @@ def volet_poses(res):
                if l["lecture"]["D_vue"] is not None]
 
     def cycle(sel):
+        """Renvoie les médianes du cycle (temps total, transit, approche, tenue, longueur, vitesse)
+        et le 90e centile du temps total."""
         b = [l["bilan"] for l in sel]
         return {"n": len(sel),
                 "t_total": mediane([x["t_total"] for x in b]), "t_total_p90": p90([x["t_total"] for x in b]),
@@ -178,6 +192,7 @@ def volet_poses(res):
 
 
 def figure_poses(lignes):
+    """Trace cycles.png : histogramme des temps de cycle, et temps de cycle selon la longueur du trajet."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -203,6 +218,8 @@ def figure_poses(lignes):
 # ---------------------------------------------------------------- essaim
 
 def volet_essaim(res):
+    """Résume essaim.json par manche : bilan de chaque drone, vitesse de simulation, distance minimale
+    entre deux drones ; trace essaim.png."""
     f = HERE / "essaim.json"
     if not f.exists():
         return
@@ -230,6 +247,7 @@ def volet_essaim(res):
 
 
 def figure_essaim(d):
+    """Trace essaim.png : plan de l'entrepôt et trajectoires des trois drones, une vue par manche."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -267,6 +285,7 @@ def figure_essaim(d):
 
 # ---------------------------------------------------------------- résumé
 
+# Programme principal : les trois volets (chacun sauté si son fichier manque), puis resultats.json.
 res: dict = {}
 volet_freinage(res)
 volet_poses(res)

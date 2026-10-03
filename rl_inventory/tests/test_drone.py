@@ -1,11 +1,8 @@
-"""Test de plomberie T1.2.
+"""Test T1.2 (plomberie) : construit l'arène à 1 drone, commande une vitesse avant constante et vérifie que le drone avance.
 
-Boote Isaac Sim, construit l'arène (entrepôt + drone), applique une vitesse
-AVANT constante et vérifie que le drone se déplace bien selon la commande.
-
+Réussi si le déplacement moyen selon x dépasse 0,3 m après 120 pas.
 Lancement :
-  cd ~/IsaacLab
-  ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/test_drone.py --num_envs 2 --headless
+  cd ~/IsaacLab && ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/tests/test_drone.py --num_envs 2 --headless
 """
 
 import argparse
@@ -31,6 +28,7 @@ from rl_inventory.env import QRInventoryEnv, QRInventoryEnvCfg  # noqa: E402
 
 
 def main():
+    """Pousse le drone plein avant pendant --steps pas, puis affiche son déplacement moyen et le verdict OK / ÉCHEC."""
     cfg = QRInventoryEnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = QRInventoryEnv(cfg)

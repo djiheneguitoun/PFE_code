@@ -1,16 +1,17 @@
-"""Enregistre les trajectoires d'une politique pour voir CE QU'ELLE FAIT réellement.
+"""Enregistre les trajectoires d'un modèle pour voir OÙ vont les drones (les courbes disent seulement combien ils lisent).
 
-Les courbes d'entraînement disent combien le drone lit, jamais où il va. Ce script sauvegarde
-positions, caps, vitesses et instants de lecture, pour analyser hors ligne : balaie-t-il
-l'entrepôt systématiquement, tourne-t-il en rond, reste-t-il dans une zone ?
-
+Sauvegarde positions, caps, vitesses et lectures dans un .npz (défaut /tmp/traj.npz), à analyser hors ligne.
   bash rl_inventory/launch.sh rl_inventory/swarmscan_map/record_traj.py --headless \
        --checkpoint swarmscan_runs/<run>/model_XXXX.pt --level 0 --num_envs 8
 """
 
+# Questions visées : le drone balaie-t-il l'entrepôt méthodiquement, tourne-t-il en rond,
+# reste-t-il dans une seule zone ?
+
 import argparse
 import os
 
+# limite la fragmentation de la mémoire GPU (à poser avant que torch n'utilise le GPU)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from isaaclab.app import AppLauncher
@@ -25,6 +26,7 @@ parser.add_argument("--out", type=str, default="/tmp/traj.npz")
 parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# Isaac Sim doit démarrer AVANT d'importer les modules isaaclab et le reste du projet
 simulation_app = AppLauncher(args).app
 
 import sys
@@ -32,6 +34,7 @@ import sys
 import numpy as np
 import torch
 
+# racine du projet ajoutée au chemin : le script se lance depuis n'importe quel dossier
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from rl_inventory.env import AGENTS
@@ -40,23 +43,25 @@ from rl_inventory.swarmscan_map.env_map import SwarmScanMapEnv, SwarmScanMapEnvC
 from rl_inventory.swarmscan_map.flatten_wrapper import SwarmMapVecEnv
 from rl_inventory.swarmscan_map.models import MapActorCritic
 
-D = len(AGENTS)
+D = len(AGENTS)  # nombre de drones par entrepôt (3)
+# groupes d'observation : l'acteur (policy) et le critique, comme à l'entraînement
 OBS_GROUPS = {"policy": ["maps", "vector"], "critic": ["maps", "vector", "privileged"]}
 
 
 def main():
+    """Charge le modèle, joue un épisode complet et enregistre 1 pas sur `--every` dans le fichier .npz."""
     torch.manual_seed(args.seed)
     cfg = SwarmScanMapEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
     env = SwarmScanMapEnv(cfg)
     env._curr.level = args.level
-    env._curr.cfg.min_episodes_per_notch = 10**9
+    env._curr.cfg.min_episodes_per_notch = 10**9    # niveau figé : ni montée ni recul
     env._curr.cfg.min_episodes_down = 10**9
-    MAP_CFG.train.mission_target = 2.0
+    MAP_CFG.train.mission_target = 2.0              # pas de fin anticipée : épisodes complets
     vec = SwarmMapVecEnv(env)
     vec.get_observations()
-    env._ensure_qr()
+    env._ensure_qr()      # AVANT le reset : sinon configurations et départs aidés ne sont pas tirés
     vec.reset()
 
     net = MapActorCritic(
@@ -87,6 +92,8 @@ def main():
         if (step + 1) % 1000 == 0:
             print(f"    pas {step + 1}/{horizon}", flush=True)
 
+    # contenu du .npz : pos (m), yaw (rad), vel (m/s), reads (lectures par entrepôt), read_frac,
+    # bornes de l'arène, position des QR (tag_xy) et masque des QR lisibles
     frac = env._read_frac_readable.cpu().numpy().copy()
     np.savez_compressed(
         args.out, pos=np.stack(pos_log), yaw=np.stack(yaw_log), vel=np.stack(vel_log),

@@ -1,5 +1,8 @@
-"""Un numéro (la graine) donne un entrepôt. Aucun appel au simulateur ici : ce module est du
-Python pur, donc la reproductibilité et la variation se testent en quelques millisecondes."""
+"""Tire un entrepôt à partir d'une graine (un numéro) : position des racks, part des cartons gardés, départs des drones.
+
+Python pur, sans simulateur : la reproductibilité et la variation se testent en quelques millisecondes
+(experiments/01_reproductibilite et 02_variation). Utilisé par scene.py et par les missions : make_layout(9033).
+"""
 
 from __future__ import annotations
 
@@ -8,28 +11,32 @@ from dataclasses import dataclass, field
 
 from .config import DRONES, INTERIOR, OBSTACLES, RACKS
 
-MIN_AISLE = 3.0
-MARGIN = 0.6
+MIN_AISLE = 3.0   # m : largeur minimale d'une allée entre deux racks
+MARGIN = 0.6   # m : marge gardée le long des murs
 
 
 @dataclass(frozen=True)
 class RackPlacement:
+    """La place d'un rack dans un entrepôt tiré : nom dans le fichier USD, x de son centre et y de son bout sud (m)."""
     prim: str
     x: float
     y_min: float
 
     @property
     def x_bounds(self) -> tuple[float, float]:
+        """Renvoie les bornes en x du rack (m) : son centre ± 0,70 m."""
         half = RACKS.depth / 2.0
         return (self.x - half, self.x + half)
 
     @property
     def y_bounds(self) -> tuple[float, float]:
+        """Renvoie les bornes en y du rack (m), du bout sud au bout nord, 17,62 m plus loin."""
         return (self.y_min, self.y_min + RACKS.length)
 
 
 @dataclass(frozen=True)
 class Layout:
+    """Un entrepôt tiré d'une graine : racks, part des cartons gardés, graine du tirage des cartons, départs des drones (x, y, z)."""
     seed: int
     racks: tuple[RackPlacement, ...]
     fill_fraction: float
@@ -37,6 +44,7 @@ class Layout:
     spawns: tuple[tuple[float, float, float], ...] = field(default=())
 
     def signature(self) -> tuple:
+        """Renvoie un résumé arrondi de l'entrepôt, pour vérifier que deux tirages de la même graine sont identiques."""
         return (
             tuple((r.prim, round(r.x, 4), round(r.y_min, 4)) for r in self.racks),
             round(self.fill_fraction, 6),
@@ -45,10 +53,12 @@ class Layout:
         )
 
     def rack_spread(self) -> float:
+        """Renvoie l'écart en x (m) entre le rack le plus à l'ouest et le plus à l'est."""
         return max(r.x for r in self.racks) - min(r.x for r in self.racks)
 
 
 def _sorted_positions(rng: random.Random, lo: float, hi: float, n: int, gap: float) -> list[float]:
+    """Tire `n` positions triées entre `lo` et `hi`, espacées d'au moins `gap` ; lève ValueError si l'intervalle est trop court."""
     span = (hi - lo) - (n - 1) * gap
     if span < 0:
         raise ValueError("intervalle trop court pour placer les racks")
@@ -57,6 +67,7 @@ def _sorted_positions(rng: random.Random, lo: float, hi: float, n: int, gap: flo
 
 
 def _rack_x_positions(rng: random.Random) -> list[float]:
+    """Tire le x du centre des trois racks : au moins 3 m d'allée entre eux et 0,6 m de marge aux murs."""
     half = RACKS.depth / 2.0
     lo = INTERIOR.x_min + half + MARGIN
     hi = INTERIOR.x_max - half - MARGIN
@@ -64,12 +75,14 @@ def _rack_x_positions(rng: random.Random) -> list[float]:
 
 
 def _rack_y_min(rng: random.Random) -> float:
+    """Tire le y du bout sud d'un rack, pour qu'il tienne en entier entre les murs avec 0,6 m de marge."""
     lo = INTERIOR.y_min + MARGIN
     hi = INTERIOR.y_max - MARGIN - RACKS.length
     return rng.uniform(lo, hi)
 
 
 def _blocked(x: float, y: float, racks: tuple[RackPlacement, ...]) -> bool:
+    """Renvoie vrai si le point (x, y) est à moins de 1,2 m d'un rack ou à moins de 1 m d'un obstacle fixe."""
     for r in racks:
         rx0, rx1 = r.x_bounds
         ry0, ry1 = r.y_bounds
@@ -83,6 +96,7 @@ def _blocked(x: float, y: float, racks: tuple[RackPlacement, ...]) -> bool:
 
 
 def _spawns(rng: random.Random, racks: tuple[RackPlacement, ...]) -> tuple:
+    """Tire les départs des drones (x, y, z) hors des zones bloquées, à plus de 2 m l'un de l'autre ; erreur après 4 000 essais."""
     out: list[tuple[float, float, float]] = []
     for _ in range(4000):
         if len(out) == DRONES.count:
@@ -100,6 +114,7 @@ def _spawns(rng: random.Random, racks: tuple[RackPlacement, ...]) -> tuple:
 
 
 def make_layout(seed: int) -> Layout:
+    """Renvoie l'entrepôt de la graine `seed` (même graine, même entrepôt) : racks, 50 à 100 % des cartons gardés, départs."""
     rng = random.Random(seed)
     xs = _rack_x_positions(rng)
     racks = tuple(
@@ -118,6 +133,7 @@ def make_layout(seed: int) -> Layout:
 
 
 def select_boxes(box_paths: list[str], layout: Layout) -> list[str]:
+    """Renvoie, triés, les cartons gardés : la part `fill_fraction` des cartons, tirée avec la graine des cartons (au moins un)."""
     rng = random.Random(layout.box_seed)
     keep = sorted(box_paths)
     rng.shuffle(keep)

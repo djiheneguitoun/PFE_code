@@ -1,11 +1,8 @@
-"""Entraînement du détecteur — étape 7.
+"""Entraîne les variantes YOLO du détecteur de l'étape 7 (GPU nécessaire, pas de simulateur).
 
-  entraine.py --variantes n1024,n640,s1024        entraîne les variantes, dans l'ordre
-  entraine.py --liste                             montre les variantes disponibles
-
-Apprentissage sur des entrepôts d'entraînement (graines 0 à 5), validation sur les deux
-entrepôts scellés (9033 et 9019) que le réseau ne voit jamais pendant l'apprentissage. Le plus
-petit modèle qui suffit sera retenu : il doit tourner pendant le vol sans gêner le reste.
+  entraine.py --variantes n1024,n640,s1024   entraîne ces variantes dans l'ordre → runs/<nom>/, bilan dans entrainement.json
+  entraine.py --liste                         affiche les variantes disponibles
+Apprentissage sur les entrepôts 0 à 5, validation sur les entrepôts scellés 9033 et 9019, jamais vus à l'apprentissage.
 """
 
 from __future__ import annotations
@@ -18,13 +15,14 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-JEU = HERE / "jeu"
-RUNS = HERE / "runs"
+JEU = HERE / "jeu"              # images et cadres produits par rendu.py
+RUNS = HERE / "runs"            # sorties d'ultralytics : un dossier par variante
 
-TRAIN_SEEDS = (0, 1, 2, 3, 4, 5)
-TEST_SEEDS = (9033, 9019)
-CLASSES = {0: "qr", 1: "carton"}
+TRAIN_SEEDS = (0, 1, 2, 3, 4, 5)   # graines des entrepôts d'apprentissage
+TEST_SEEDS = (9033, 9019)          # entrepôts scellés : validation seulement
+CLASSES = {0: "qr", 1: "carton"}   # indice de classe YOLO → nom
 
+# n = YOLO11 nano (2,6 M paramètres), s = YOLO11 small ; imgsz = taille d'entrée en pixels ; batch = images par lot
 VARIANTES = {
     "n1024": {"modele": "yolo11n.pt", "imgsz": 1024, "batch": 8, "epochs": 50},
     "n640": {"modele": "yolo11n.pt", "imgsz": 640, "batch": 16, "epochs": 50},
@@ -33,6 +31,7 @@ VARIANTES = {
 
 
 def ecrit_yaml() -> Path:
+    """Vérifie que les 8 jeux existent et écrit jeu.yaml (chemin absolu du jeu, train, val, classes) ; renvoie son chemin."""
     for s in TRAIN_SEEDS + TEST_SEEDS:
         if not (JEU / f"rendu_{s}" / "images").exists():
             raise RuntimeError(f"jeu manquant : rendu_{s}")
@@ -45,12 +44,15 @@ def ecrit_yaml() -> Path:
 
 
 def entraine(nom: str, yaml: Path) -> dict:
+    """Entraîne une variante (précision mixte, arrêt après 12 époques sans progrès) puis la valide ; renvoie son bilan."""
     from ultralytics import YOLO
 
     v = VARIANTES[nom]
     os.environ["YOLO_AUTOINSTALL"] = "false"
     modele = YOLO(v["modele"])
     t0 = time.perf_counter()
+    # amp = précision mixte ; patience = arrêt après 12 époques sans progrès ; fliplr=0 : aucune image en miroir ;
+    # mosaic : assemblages de 4 images, arrêtés pour les 10 dernières époques (close_mosaic)
     modele.train(data=str(yaml), imgsz=v["imgsz"], epochs=v["epochs"], batch=v["batch"],
                  patience=12, workers=4, device=0, amp=True, project=str(RUNS), name=nom,
                  exist_ok=True, seed=0, deterministic=False, plots=True, verbose=False,
@@ -89,6 +91,7 @@ if __name__ == "__main__":
     if fichier.exists():
         bilans = json.loads(fichier.read_text())
     for nom in [s for s in a.variantes.split(",") if s]:
+        # le nouveau bilan remplace l'ancien de la même variante ; les autres variantes sont gardées
         bilans = [b for b in bilans if b["variante"] != nom] + [entraine(nom, yaml)]
         fichier.write_text(json.dumps(bilans, indent=2))
     print("ENTRAINEMENT FINI")

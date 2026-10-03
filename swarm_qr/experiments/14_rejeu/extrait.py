@@ -1,4 +1,9 @@
-"""Extrait les huit vols — système et référence — en un seul fichier, pour le rejeu en 3D."""
+"""Rassemble les 8 vols (4 du système, 4 de la référence de Pore et al.) dans vols.json, les données du rejeu 3D.
+
+Lit ../11_mission/tests of system/eval_* et ../13_pore/pore_* ; aucun simulateur, numpy suffit. Lancement :
+    python swarm_qr/experiments/14_rejeu/extrait.py [--sortie vols.json]
+Le contenu de vols.json est celui de la ligne `window.__VOLS__=` des deux pages .html du rejeu.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,26 +15,31 @@ from pathlib import Path
 
 import numpy as np
 
+# dossier de ce script ; la racine du projet est ajoutée au chemin d'import
 ICI = Path(__file__).resolve().parent
 sys.path.insert(0, str(ICI.parents[2]))
+# vols du système (évaluation finale de l'étape 5) et vols de la référence
 VOLS = ICI.parents[0] / "11_mission" / "tests of system"
 PORE = ICI.parents[0] / "13_pore"
+# (clé dans la page, dossier, titre affiché) des 4 vols du système
 CAS = [("nominal", "eval_nominal", "Nominal"),
        ("panne", "eval_panne", "Panne d'un drone"),
        ("inconnu", "eval_9019", "Entrepôt jamais vu"),
        ("obstacle", "eval_obstacle", "Obstacle en cours de mission")]
+# idem pour la référence, plus le vol du système sur le même entrepôt (d'où viennent racks et panneaux)
 CAS_PORE = [("pore_nominal", "pore_nominal", "Nominal", "eval_nominal"),
             ("pore_panne", "pore_panne", "Panne d'un drone", "eval_nominal"),
             ("pore_inconnu", "pore_9019", "Entrepôt jamais vu", "eval_9019"),
             ("pore_obstacle", "pore_obstacle", "Obstacle en cours de mission", "eval_nominal")]
-CELL = 0.25
-X0, Y0 = -11.0, -13.0
-PAS_FOG = 2
-RECUL_PORE = 1.65
+CELL = 0.25             # m : côté d'une case de la carte
+X0, Y0 = -11.0, -13.0   # m : coin de la grille de la carte, où se pose le brouillard
+PAS_FOG = 2             # le brouillard garde une case sur 2 dans chaque direction (cases de 0,5 m)
+RECUL_PORE = 1.65       # m : distance arrêt–face de rack de la référence (même valeur que pore.RECUL)
 
 
 def instants_de_lecture(m: dict) -> dict[str, float]:
-    """Le premier instant où chaque code entre à l'inventaire, reconstruit comme expliqué en tête."""
+    """Renvoie l'instant (s) où chaque code entre à l'inventaire : le k-ième code nouveau des instantanés de carte
+    reçoit le k-ième saut de la courbe codes_par_t (instantanés pris toutes les 10 s)."""
     sauts = []
     serie = m["codes_par_t"]
     for (t0, n0), (t1, n1) in zip(serie, serie[1:]):
@@ -52,7 +62,8 @@ def instants_de_lecture(m: dict) -> dict[str, float]:
 
 
 def cap_par_instant(agent: dict, traj: np.ndarray) -> np.ndarray:
-    """Le cap du drone : il regarde sa cible quand il est arrivé devant, sinon là où il va."""
+    """Reconstitue le cap (rad) à chaque point : vers ce que vise la cible quand le drone en est à moins de 1,2 m,
+    sinon vers où il va ; lissé sur 5 points."""
     caps = np.zeros(len(traj))
     for k, (t, x, y, z) in enumerate(traj):
         active = None
@@ -76,7 +87,7 @@ def cap_par_instant(agent: dict, traj: np.ndarray) -> np.ndarray:
 
 
 def brouillard(dossier: Path, m: dict) -> dict:
-    """Ce que la carte connaît, à chaque instantané, en une image binaire compressée."""
+    """Renvoie, pour chaque instantané, la zone connue de la carte vue de dessus (bande de vol 0,6–5,5 m), en image binaire codée en base64."""
     images, temps = [], []
     for inst in m["instantanes"]:
         f = dossier / "instantanes" / f"{inst['k']:03d}_carte.npz"
@@ -94,7 +105,7 @@ def brouillard(dossier: Path, m: dict) -> dict:
 
 
 def un_vol(cle: str, dossier: str, titre: str) -> dict:
-    """Un vol enregistre transforme en ce que la page de rejeu affiche."""
+    """Convertit un vol du système (mission.json, resultats.json, instantanés) en dictionnaire affiché par la page de rejeu."""
     d = VOLS / dossier
     m = json.loads((d / "mission.json").read_text())
     r = json.loads((d / "resultats.json").read_text())
@@ -148,7 +159,7 @@ def un_vol(cle: str, dossier: str, titre: str) -> dict:
 
 
 def vise_par_la_face(face: str, position, racks: list[dict]):
-    """Le point regardé depuis un arrêt de Pore : la face de rack que son nom désigne."""
+    """Renvoie le point regardé depuis un arrêt de la référence : sur la face nommée (« rack:est » ou « rack:ouest »), en face de l'arrêt."""
     nom, cote = face.split(":")
     rack = next((rk for rk in racks if rk["prim"].endswith(nom)), None)
     if rack is None:
@@ -158,7 +169,7 @@ def vise_par_la_face(face: str, position, racks: list[dict]):
 
 
 def un_vol_pore(cle: str, dossier: str, titre: str, meme_entrepot: str) -> dict:
-    """Un vol de la référence. Le plan de l'entrepôt vient du vol du système de même graine."""
+    """Convertit un vol de la référence pour la page ; racks et panneaux viennent du vol du système sur le même entrepôt (même graine)."""
     d = PORE / dossier
     m = json.loads((d / "mission.json").read_text())
     r = json.loads((d / "resultats.json").read_text())
@@ -226,6 +237,7 @@ def un_vol_pore(cle: str, dossier: str, titre: str, meme_entrepot: str) -> dict:
 
 
 def main() -> None:
+    """Extrait les 8 vols, écrit vols.json (dimensions de l'entrepôt et vols) et affiche un résumé par vol."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--sortie", default=str(ICI / "vols.json"))
     a = ap.parse_args()

@@ -1,10 +1,11 @@
 /* ═══════════════════════════════════════════════════════════════
-   Drone Simulation Dashboard — Style Sheet
-   Dark glassmorphism theme with accent colours for WiFi / 5G
+   Feuille de style du tableau de bord « WiFi / 5G + exploration » (chargée par index.html).
+   Thème sombre à cartes translucides ; WiFi en cyan, 5G en violet.
+   Rien à lancer : servie avec la page par python3 dashboard/dashboard_server.py.
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-    /* Palette */
+    /* Palette : fonds, bordures, textes, couleurs d'accent, rayons des coins */
     --bg-0:        #0b0e14;
     --bg-1:        #111620;
     --bg-2:        #171d2b;
@@ -44,7 +45,7 @@ body {
     overflow-x: hidden;
 }
 
-/* subtle grid pattern */
+/* quadrillage discret en fond de page */
 body::before {
     content: '';
     position: fixed; inset: 0; z-index: -1;
@@ -56,7 +57,7 @@ body::before {
     background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
 }
 
-/* ─── HEADER ─── */
+/* ─── EN-TÊTE : logo, onglets, état de la connexion, horloge ─── */
 .top-bar {
     display: flex;
     align-items: center;
@@ -132,7 +133,7 @@ body::before {
     color: var(--text-2);
 }
 
-/* ─── MAIN ─── */
+/* ─── CONTENU PRINCIPAL ─── */
 .dashboard {
     padding: 1.25rem 1.5rem 3rem;
     max-width: 1600px;
@@ -142,7 +143,7 @@ body::before {
     gap: 1.25rem;
 }
 
-/* ─── KPI ROW ─── */
+/* ─── CARTES CHIFFRÉES (KPI) ─── */
 .kpi-row {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -182,14 +183,14 @@ body::before {
 }
 .kpi-label { font-size: .75rem; color: var(--text-2); margin-top: 2px; }
 
-/* ─── CHARTS ─── */
+/* ─── GRAPHIQUES ─── */
 .charts-row {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 1rem;
 }
 .charts-row .wide {
-    /* first two charts take ~half each */
+    /* les deux premiers graphiques prennent chacun environ la moitié de la largeur */
 }
 
 .chart-card {
@@ -231,7 +232,7 @@ body::before {
 }
 .chart-body canvas { width: 100% !important; height: 100% !important; }
 
-/* ─── MAP ─── */
+/* ─── CARTE 2D DES POSITIONS ─── */
 .map-body {
     display: grid; place-items: center;
     min-height: 300px;
@@ -241,7 +242,7 @@ body::before {
     background: var(--bg-1);
 }
 
-/* ─── TABLES ─── */
+/* ─── TABLEAUX PAR PAIRE / PAR DRONE ─── */
 .table-body {
     padding: 0;
     overflow-y: auto;
@@ -271,7 +272,7 @@ body::before {
     background: rgba(255,255,255,.025);
 }
 
-/* Signal quality badges in table */
+/* Étiquettes de qualité du signal (Excellent, Good, Fair, Weak, BLOCKED) */
 .quality {
     display: inline-block;
     padding: .15rem .5rem;
@@ -286,7 +287,7 @@ body::before {
 .quality.weak      { background: rgba(251,146,60,.12); color: var(--accent-orange); }
 .quality.blocked   { background: rgba(248,113,113,.12); color: var(--accent-red); }
 
-/* ─── LOG ─── */
+/* ─── JOURNAL ─── */
 .log-section { }
 .log-body {
     padding: .6rem .8rem;
@@ -316,13 +317,13 @@ body::before {
 }
 .btn-clear:hover { background: rgba(248,113,113,.2); }
 
-/* ─── SCROLLBAR ─── */
+/* ─── BARRES DE DÉFILEMENT ─── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.18); }
 
-/* ─── RESPONSIVE ─── */
+/* ─── ÉCRANS ÉTROITS (moins de 1100 px, puis moins de 700 px) ─── */
 @media (max-width: 1100px) {
     .charts-row { grid-template-columns: 1fr; }
     .kpi-row    { grid-template-columns: repeat(3, 1fr); }
@@ -334,7 +335,7 @@ body::before {
     .scenario-tabs { display: none; }
 }
 
-/* ─── ANIMATIONS ─── */
+/* ─── ANIMATIONS D'APPARITION ─── */
 @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -343,7 +344,7 @@ body::before {
     animation: fadeInUp .5s ease both;
 }
 
-/* ─── FILTER VISIBILITY ─── */
+/* ─── BLOCS CACHÉS PAR LE FILTRE D'ONGLET (voir applyFilter dans app.js) ─── */
 .hidden-by-filter {
     display: none !important;
 }
@@ -351,7 +352,7 @@ body::before {
     transition: opacity .25s ease, transform .2s ease;
 }
 
-/* ─── EXPLORATION STYLES ─── */
+/* ─── ONGLET EXPLORATION : badges d'état ─── */
 .kpi-icon.explore-icon {
     background: rgba(76,175,80,.12);
     color: #4caf50;
@@ -375,7 +376,7 @@ body::before {
     50% { opacity: 0.6; }
 }
 
-/* Progress bar */
+/* Barre de progression */
 .progress-container {
     display: flex;
     align-items: center;
@@ -406,9 +407,9 @@ body::before {
     text-align: right;
 }
 
-/* ─── NEW Visual Exploration Styles ─── */
+/* ─── ONGLET EXPLORATION : cartes et jauges ─── */
 
-/* Hero map section */
+/* Grande carte */
 .vis-hero { padding: 0 1rem; margin-bottom: 1rem; }
 .vis-card {
     background: var(--bg-card);
@@ -480,7 +481,7 @@ body::before {
     display: inline-block;
 }
 
-/* Per-drone belief maps */
+/* Cartes par drone (3 colonnes) */
 .vis-drone-maps {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -544,7 +545,7 @@ body::before {
     border-color: rgba(255,152,0,.25) !important;
 }
 
-/* Gauge row */
+/* Rangée de jauges (4 colonnes) */
 .vis-gauges {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -563,13 +564,13 @@ body::before {
     display: block;
 }
 
-/* Events section */
+/* Bloc des événements */
 .vis-events-section {
     padding: 0 1rem;
     margin-bottom: 1rem;
 }
 
-/* ─── Event Timeline (kept from before) ─── */
+/* ─── Journal des événements (une ligne par événement, bord coloré selon le type) ─── */
 .event-timeline {
     max-height: 320px;
     overflow-y: auto;
@@ -637,6 +638,7 @@ body::before {
 .filter-label input {
     accent-color: var(--accent-wifi);
 }
+/* Bouton « Effacer » (fond gris discret) */
 .btn-clear {
     background: rgba(255,255,255,.06);
     border: 1px solid var(--border);
@@ -655,7 +657,7 @@ body::before {
     50% { box-shadow: 0 0 20px 4px rgba(244,67,54,.15); }
 }
 
-/* Responsive: stack drone panels on narrow screens */
+/* Écrans étroits : cartes par drone empilées, jauges sur 2 colonnes ; puis délais d'apparition des cartes chiffrées */
 @media (max-width: 900px) {
     .vis-drone-maps { grid-template-columns: 1fr; }
     .vis-gauges { grid-template-columns: repeat(2, 1fr); }

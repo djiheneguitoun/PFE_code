@@ -1,17 +1,15 @@
-"""rl_inventory — Contrôleur RL pour l'inspection d'inventaire QR par drone.
+"""Paquet rl_inventory : essai d'apprentissage par renforcement (RL) pour l'inventaire QR par un essaim de drones.
 
-Arène Isaac Lab + cerveaux Pore / PPO / Dreamer.
-Voir CONCEPTION_controleur_RL_inventaire.md et README.md.
-
-Enregistre la tâche essaim multi-drone. L'entry_point est résolu paresseusement
-par gym.make (env.py n'est importé qu'après le lancement de l'app Isaac), donc
-importer ce package reste léger (utile pour config_rl en python pur).
+Importer le paquet enregistre la tâche gym « Isaac-QR-Inventory-Swarm-Direct-v0 », utilisée par train_ppo.py et eval.py.
+env.py n'est chargé qu'au gym.make, après le démarrage d'Isaac Sim : l'import reste léger (config_rl.py se lit sans simulateur).
+Explications : A_LIRE_POUR_LE_PROMOTEUR/README.md ; conception : CONCEPTION_controleur_RL_inventaire.md.
 """
 
 import gymnasium as gym
 
 from . import agents
 
+# Tâche essaim : classe d'environnement, classe de réglages et les deux fichiers de réglages skrl (IPPO, MAPPO).
 gym.register(
     id="Isaac-QR-Inventory-Swarm-Direct-v0",
     entry_point="rl_inventory.env:SwarmQREnv",

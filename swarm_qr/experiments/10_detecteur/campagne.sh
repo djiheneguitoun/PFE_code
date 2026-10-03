@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Campagne de l'étape 7. Chaque phase se lance seule :
-#   bash campagne.sh rendu      images + cadres des 6 entrepôts d'entraînement et des 2 scellés
-#   bash campagne.sh controle   planches à regarder + confrontation à la projection de l'étape 2
-#   bash campagne.sh entraine   les variantes (n1024, n640 ; s1024 seulement si demandé)
-#   bash campagne.sh banc       le jugement, sans simulateur
-# Jamais deux phases GPU en même temps : le rendu et l'entraînement se partagent 8 Go.
+# Campagne de l'étape 7 (détecteur YOLO), une phase par appel : bash campagne.sh <phase>
+#   rendu (images + cadres de 6 entrepôts d'entraînement et 2 scellés, Isaac Sim) | controle (planches + comparaison à l'étape 2)
+#   entraine [variantes] (défaut n1024,n640 ; s1024 seulement si demandé) | banc (jugement, sans simulateur)
+#   vol (patrouille de l'étape 4 avec le détecteur branché, Isaac Sim + SITL)
+# Jamais deux phases GPU en même temps : le rendu et l'entraînement se partagent les 8 Go de la carte.
 
 set -u
+# Python de l'environnement Isaac Sim (machine de simulation)
 PY=/home/djihene_guitoun/isaac5_env/bin/python
 ICI="$(cd "$(dirname "$0")" && pwd)"
+# écran virtuel :1 pour Isaac Sim, sorties non tamponnées, ultralytics n'installe rien tout seul
 export DISPLAY=:1 PYTHONUNBUFFERED=1 YOLO_AUTOINSTALL=false
 cd "$ICI" || exit 1
 
+# Rend un entrepôt (graine $1, options suivantes passées à rendu.py), coupé après 1 h ; filtre le bruit d'Isaac Sim.
 rendu_un() {
   local seed="$1"; shift
   echo "=========== rendu entrepot $seed ==========="
@@ -22,6 +24,7 @@ rendu_un() {
 
 case "${1:-}" in
   rendu)
+    # 6 entrepôts d'entraînement à 500 images, puis les 2 scellés à 400 images + ré-annotation des images de l'étape 2
     for s in 0 1 2 3 4 5; do rendu_un "$s" --images 500; done
     rendu_un 9033 --images 400 --relabel optique,sans_qr,vol,traversee
     rendu_un 9019 --images 400 --relabel 9019
@@ -37,8 +40,8 @@ case "${1:-}" in
     "$PY" banc.py
     ;;
   vol)
-    # l'œil appris en mission : même patrouille que l'étape 4, réduite à une étagère et deux
-    # allées, jugée par l'analyse de l'étape 4 (pistes sur un vrai panneau, coûts, sécurité)
+    # le détecteur en vol : même patrouille que l'étape 4 (09_carte), réduite à une étagère et deux
+    # allées, coupée après 2 h, puis jugée par l'analyse de l'étape 4 (pistes, coûts, sécurité) ; sorties dans vol/
     pgrep -x arducopter >/dev/null && { echo "ATTENTION : un SITL tourne encore"; exit 1; }
     timeout -s KILL 7200 "$PY" ../09_carte/banc.py --mode vol --etages 1 --allees 2 --detecteur auto --sortie "$ICI/vol" 2>&1 | grep -vE "gpu.foundation|PNG|ros2"
     echo "--- vol : code de sortie ${PIPESTATUS[0]}"

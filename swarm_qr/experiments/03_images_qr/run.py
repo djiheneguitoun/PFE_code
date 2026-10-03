@@ -1,11 +1,10 @@
-"""Test 3 — Le drone SITL lit-il les QR en volant ?
+"""Test 3 (étape 1) : le drone piloté par ArduPilot SITL lit-il les QR en volant ?
 
-Deux mesures dans un seul vol. La planche : le drone se place à six distances face à un
-panneau, une photo par point, et on vérifie que **la cible visée** est lue — pas un voisin.
-La vidéo : il longe le rack en lisant en continu, et le compteur affiche le nombre de codes
-différents lus depuis le début du passage.
-
-  DISPLAY=:1 run.py --seed 7
+Un seul vol. La planche : le drone se place à six distances (0,5 à 3 m) face à un panneau,
+photographie, et on vérifie que c'est bien la cible visée qui est lue, pas un voisin. La vidéo :
+il longe le rack en lisant en continu (compteur des codes différents lus). Lancé par run_all.sh,
+ou seul depuis la racine du projet (DISPLAY : ArduPilot ouvre un terminal) :
+  DISPLAY=:1 $PY swarm_qr/experiments/03_images_qr/run.py --seed 7
 """
 
 from __future__ import annotations
@@ -16,12 +15,14 @@ import math
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+HERE = Path(__file__).resolve().parent  # dossier du test : toutes les sorties y sont écrites
+ROOT = HERE.parents[2]                  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
 
 sys.stdout.reconfigure(line_buffering=True)
 
+# --speed : vitesse le long du rack pendant la vidéo (m/s) ; --standoff : distance entre la
+# caméra et le plan du panneau visé pendant la vidéo (m).
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=7)
 parser.add_argument("--speed", type=float, default=0.5)
@@ -50,18 +51,22 @@ from swarm_qr.env.pilot import Pilot  # noqa: E402
 from swarm_qr.experiments import _img, _viz  # noqa: E402
 from swarm_qr.experiments._vol import transit  # noqa: E402
 
-DISTANCES = (0.5, 0.8, 1.1, 1.5, 2.0, 3.0)
-FLY_ALT = 1.6
-CAM_LATERAL = CAMERAS.side_offset
-CAM_BAS = CAMERAS.below
+DISTANCES = (0.5, 0.8, 1.1, 1.5, 2.0, 3.0)  # m : distances caméra-panneau de la planche
+FLY_ALT = 1.6                      # m : altitude de décollage
+CAM_LATERAL = CAMERAS.side_offset  # m : caméra gauche à 10 cm du centre du drone, sur le côté...
+CAM_BAS = CAMERAS.below            # m : ... et 11 cm plus bas
 
 
 def codes_lus(bgr) -> list[str]:
+    """Renvoie les textes des QR lus dans l'image (décodeur zxing de swarm_qr.perception, réglé
+    pour ne lire que les QR)."""
     gris = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     return [t for t, _ in P.DECODEURS["zxing"](gris)]
 
 
 def vue_de_dessus(scene, overview):
+    """Renvoie la vue de dessus en BGR dès qu'elle n'est plus vide, en faisant avancer le rendu
+    (30 essais au plus, sinon erreur)."""
     for _ in range(30):
         img = overview.get_rgb()
         if img is not None and getattr(img, "ndim", 0) == 3 and img.size:
@@ -71,6 +76,8 @@ def vue_de_dessus(scene, overview):
 
 
 def main() -> None:
+    """Fait décoller le drone, photographie le panneau visé à six distances (planche_qr.jpg), puis
+    longe le rack en filmant (vol_le_long_du_rack.mp4) ; écrit resultat.json."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=True, n_drones=1)
     overview = _viz.overview_camera()
@@ -81,9 +88,11 @@ def main() -> None:
     omni.timeline.get_timeline_interface().play()
 
     def get_pos():
+        """Renvoie la position vraie du drone 0 (lue dans le simulateur), en mètres."""
         return scene.drones[0].state.position
 
     def get_yaw():
+        """Renvoie le cap (lacet) vrai du drone 0, en radians."""
         return float(Rotation.from_quat(scene.drones[0].state.attitude).as_euler("ZYX")[0])
 
     pilot = Pilot(scene.world, 0)
@@ -91,6 +100,7 @@ def main() -> None:
         print("ECHEC : le drone n'a pas decolle")
         return
 
+    # Cible : un panneau tourné vers +x, entre 1 et 3 m de haut, le plus proche de 1,6 m.
     bons = [t for t in scene.tags if t.normal[0] > 0.9 and 1.0 < t.position[2] < 3.0]
     tag = sorted(bons or list(scene.tags), key=lambda t: abs(t.position[2] - FLY_ALT))[0]
     n = np.array(tag.normal, float)
@@ -107,6 +117,8 @@ def main() -> None:
     for d in DISTANCES:
         cible_cam = np.array(tag.position, float) + n * d
         cible_cam[2] = max(0.8, tag.position[2])
+        # Point visé pour le centre du drone : on compense le décalage de la caméra, sur le côté
+        # ET en hauteur (l'ancienne visée ne compensait que la hauteur).
         cible = cible_cam - lateral + np.array([0.0, 0.0, CAM_BAS])
         # 90 s : le premier trajet fait 16 m depuis le point d'apparition, plus la rotation
         atteint = pilot.goto(cible, psi, get_pos, tol=0.15, get_yaw=get_yaw, timeout_sim_s=90.0)
@@ -133,6 +145,8 @@ def main() -> None:
                        tag.position[2] + CAM_BAS])
     pilot.goto(depart - lateral, psi, get_pos, tol=0.2, get_yaw=get_yaw, timeout_sim_s=90.0)
 
+    # Vitesse +y du monde (le long du rack) et cap, convertis dans le repère NED d'ArduPilot
+    # (nord, est, bas).
     R = pilot._ned_in_world
     v_ned = R.T @ np.array([0.0, args.speed, 0.0])
     cw = np.array([math.cos(psi), math.sin(psi), 0.0])
@@ -140,6 +154,7 @@ def main() -> None:
 
     images, lus = [], set()
     fin_y = y1 + 1.0
+    # Garde-fou : au plus 3 fois le nombre d'images prévu (une toutes les 0,2 s), plus 100.
     garde = int((fin_y - y0 + 1.0) / args.speed / 0.2 * 3) + 100
     while float(get_pos()[1]) < fin_y and len(images) < garde:
         pilot.velocity(float(v_ned[0]), float(v_ned[1]), float(v_ned[2]), yaw_rad=psi_ned)

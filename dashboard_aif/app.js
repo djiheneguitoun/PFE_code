@@ -1,27 +1,31 @@
-/* ══════════════════════════════════════════════════════════════
-   Active Inference Dashboard — Visualization
-   Polls /api/state, /api/history, /api/qr_state
-   Renders belief map + charts + camera feeds + QR detection
-   ══════════════════════════════════════════════════════════════ */
+// Logique de la page du tableau de bord AIF (chargée par index.html) : onglets Live, Resilience, NS-3 et Runs.
+// Toutes les 0,5 s, demande /api/state, /api/history, /api/qr_state et /api/ns3 au serveur server.py,
+// puis redessine la carte de croyance, les graphiques, les images des caméras et les tableaux.
+// Rien à lancer à part le serveur : python3 dashboard_aif/server.py, puis http://localhost:8060
 
+// Période d'interrogation du serveur, en ms (0,5 s).
 const POLL_MS = 500;
+// Couleur de chaque drone (même palette que les figures de scripts/run_artifacts.py).
 const DRONE_COLORS = ['#22d3ee', '#34d399', '#a78bfa', '#fbbf24', '#f472b6', '#fb923c'];
+// Taille d'une case de la grille sur la carte, en pixels (recalculée à chaque dessin).
 let MAP_CELL_PX = 10; // pixels per grid cell on the map canvas (recalculated dynamically)
 
+// Pause demandée par le bouton ⏸, dernier step affiché, horodatage du dernier état QR affiché.
 let paused = false;
 let lastStep = -1;
 let lastQrTimestamp = 0;
 
-// Camera tab state per drone: 'annotated' | 'raw'
+// Vue choisie pour chaque caméra : 'annotated' (QR encadré) ou 'raw' (image brute).
 const camTabState = {};
 
-// ── Chart.js instances ──
+// ── Graphiques Chart.js de l'onglet Live ──
 let chartEntropy, chartCoverage, chartFE, chartIG, chartInnovation, chartQrRate;
 
 // ════════════════════════════════════════════════════
-// Initialization
+// Démarrage
 // ════════════════════════════════════════════════════
 
+// Au chargement : crée les graphiques, branche le bouton pause, puis interroge le serveur toutes les POLL_MS ms.
 document.addEventListener('DOMContentLoaded', () => {
     initCharts();
     document.getElementById('btnPause').addEventListener('click', togglePause);
@@ -29,15 +33,17 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(poll, POLL_MS); // then periodic
 });
 
+// Met en pause ou relance la mise à jour de la page (le bouton affiche alors ▶ ou ⏸).
 function togglePause() {
     paused = !paused;
     document.getElementById('btnPause').textContent = paused ? '▶' : '⏸';
 }
 
 // ════════════════════════════════════════════════════
-// Polling
+// Interrogation du serveur
 // ════════════════════════════════════════════════════
 
+// Lit état, historique, état QR et latences NS-3 ; redessine si le step a changé (partie QR : si son horodatage a changé).
 async function poll() {
     if (paused) return;
     try {
@@ -64,12 +70,12 @@ async function poll() {
             updateDroneTable(state, qrState);
             updateCharts(history, state);
             updateResilienceEvents(state);
-            // ── New tabs (rendent même si invisibles, négligeable en CPU) ──
+            // ── Onglets Resilience et NS-3 : mis à jour même s'ils sont cachés (coût négligeable) ──
             updateResilienceTab(state, history);
             updateNs3Tab(state, ns3Data);
         }
 
-        // QR state updates independently (from decoder thread)
+        // L'état QR change à son propre rythme (fil de décodage de scripts/qr_code_system.py)
         if (qrState && qrState.timestamp !== lastQrTimestamp) {
             lastQrTimestamp = qrState.timestamp;
             updateQrKPIs(qrState);
@@ -81,21 +87,24 @@ async function poll() {
     }
 }
 
+// Allume le voyant vert « Live » de l'en-tête.
 function setOnline() {
     document.querySelector('.pulse').classList.add('live');
     document.getElementById('statusText').textContent = 'Live';
 }
+// Éteint le voyant et affiche « Offline » (serveur injoignable ou fichiers /tmp pas encore écrits).
 function setOffline() {
     document.querySelector('.pulse').classList.remove('live');
     document.getElementById('statusText').textContent = 'Offline';
 }
 
 // ════════════════════════════════════════════════════
-// Belief Map Canvas
+// Carte de croyance (probabilité d'occupation de chaque case, fusionnée entre drones)
 // ════════════════════════════════════════════════════
 
+// Renvoie la couleur [r, g, b] d'une probabilité d'occupation p : vert (libre) → bleu nuit (inconnu, 0,5) → rouge (occupé).
 function beliefToRGB(p) {
-    // 0 (free) → green, 0.5 (unknown) → dark slate, 1 (occupied) → red
+    // 0 (libre) → vert, 0,5 (inconnu) → bleu-gris foncé, 1 (occupé) → rouge
     let r, g, b;
     if (p <= 0.5) {
         const t = p / 0.5;
@@ -111,8 +120,10 @@ function beliefToRGB(p) {
     return [Math.round(r), Math.round(g), Math.round(b)];
 }
 
+// Renvoie la valeur située à la fraction t (0 à 1) entre a et b (interpolation linéaire).
 function lerp(a, b, t) { return a + (b - a) * t; }
 
+// Dessine la carte : grille recadrée sur les murs détectés (2 cases de marge), obstacles, traces, drones et leur cap.
 function renderMap(state) {
     const canvas = document.getElementById('canvasMap');
     const ctx = canvas.getContext('2d');
@@ -125,7 +136,7 @@ function renderMap(state) {
     const gh = env.grid_height;
     const res = env.grid_resolution;
 
-    // ── Effective bounds: crop to detected walls (real environment) ──
+    // ── Recadrage sur les murs détectés (bornes utiles envoyées par la simulation, en cases) ──
     const eb = env.effective_bounds;
     const pad = 2; // grid-cell padding around walls
     let cx1 = 0, cy1 = 0, cx2 = gw, cy2 = gh;
@@ -138,7 +149,7 @@ function renderMap(state) {
     const cropW = cx2 - cx1;
     const cropH = cy2 - cy1;
 
-    // Dynamic cell size: fit container while keeping aspect ratio
+    // Taille d'une case : la plus grande qui tient dans la page sans déformer (au moins 4 px)
     const wrap = document.getElementById('mapWrap');
     const maxW = wrap.clientWidth - 32;
     const maxH = window.innerHeight * 0.68;
@@ -148,7 +159,7 @@ function renderMap(state) {
     canvas.width = cropW * cell;
     canvas.height = cropH * cell;
 
-    // 1) Draw belief grid — cropped + Y-FLIPPED
+    // 1) Grille de croyance, recadrée et retournée verticalement (y vers le haut)
     const tmp = document.createElement('canvas');
     tmp.width = cropW;
     tmp.height = cropH;
@@ -174,7 +185,7 @@ function renderMap(state) {
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
 
-    // 2) Draw obstacle outlines (cropped + Y-flipped)
+    // 2) Contours des obstacles connus (mêmes recadrage et retournement)
     ctx.strokeStyle = 'rgba(148,163,184,0.4)';
     ctx.lineWidth = 1;
     for (const obs of (env.obstacles || [])) {
@@ -192,13 +203,13 @@ function renderMap(state) {
         }
     }
 
-    // 3) Draw drone trails + positions (cropped + Y-flipped)
+    // 3) Traces et positions des drones (mêmes recadrage et retournement)
     const ch = canvas.height;
     for (const drone of (state.drones || [])) {
         const color = DRONE_COLORS[drone.id % DRONE_COLORS.length];
         const trail = drone.trail || [];
 
-        // trail
+        // trace
         if (trail.length > 1) {
             ctx.beginPath();
             ctx.strokeStyle = color;
@@ -214,7 +225,7 @@ function renderMap(state) {
             ctx.globalAlpha = 1;
         }
 
-        // drone dot
+        // disque du drone
         const dx = ((drone.x / res) - cx1) * cell;
         const dy = ch - ((drone.y / res) - cy1) * cell;
         ctx.beginPath();
@@ -225,7 +236,7 @@ function renderMap(state) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        // heading arrow
+        // trait indiquant le cap (heading, en radians)
         const hLen = cell * 1.5;
         const hx = dx + Math.cos(drone.heading) * hLen;
         const hy = dy - Math.sin(drone.heading) * hLen;
@@ -236,7 +247,7 @@ function renderMap(state) {
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // label
+        // nom du drone
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 10px Inter, sans-serif';
         ctx.fillText(`D${drone.id}`, dx + cell, dy - cell * 0.5);
@@ -244,9 +255,10 @@ function renderMap(state) {
 }
 
 // ════════════════════════════════════════════════════
-// KPI Updates
+// Cartes chiffrées (KPI)
 // ════════════════════════════════════════════════════
 
+// Met à jour les cartes chiffrées : step, couverture %, entropie moyenne, drones, gain d'information, innovation, phase.
 function updateKPIs(state) {
     const m = state.metrics || {};
     const r = state.resilience || {};
@@ -267,6 +279,7 @@ function updateKPIs(state) {
     phaseEl.setAttribute('data-phase', phase);
 }
 
+// Met à jour les badges de l'en-tête : step, couverture, entropie H, phase, planificateur et architecture.
 function updateBadges(state) {
     const m = state.metrics || {};
     const r = state.resilience || {};
@@ -280,7 +293,7 @@ function updateBadges(state) {
     badgePhase.textContent = phase.toUpperCase();
     badgePhase.setAttribute('data-phase', phase);
 
-    // Planner / arch badges (Tâches 1 et 2)
+    // Badges planificateur (aif ou heuristic) et architecture (« configurée→effective » si elle a basculé)
     const planner = state.planner || 'aif';
     const archCfg = state.arch_configured || 'centralized';
     const archEff = state.arch_effective || archCfg;
@@ -293,9 +306,10 @@ function updateBadges(state) {
 }
 
 // ════════════════════════════════════════════════════
-// QR KPI Updates
+// Cartes chiffrées du décodage des QR codes
 // ════════════════════════════════════════════════════
 
+// Met à jour les chiffres QR : images traitées, décodées, échecs, réponses du cache, taux de réussite, dernier texte lu.
 function updateQrKPIs(qr) {
     if (!qr) return;
     document.getElementById('kpiQrTotal').textContent = qr.total_processed || 0;
@@ -306,7 +320,7 @@ function updateQrKPIs(qr) {
     const cache = qr.cache || {};
     document.getElementById('kpiQrCacheHits').textContent = cache.hits || 0;
 
-    // Last QR data from any drone
+    // Dernier texte de QR lu, tous drones confondus (le dernier drone de la liste l'emporte)
     const drones = qr.drones || {};
     let lastData = '—';
     for (const [, dr] of Object.entries(drones)) {
@@ -316,16 +330,17 @@ function updateQrKPIs(qr) {
     dataEl.textContent = lastData.length > 20 ? lastData.slice(0, 20) + '…' : lastData;
     dataEl.title = lastData;
 
-    // Header badges
+    // Badges du bloc des caméras
     document.getElementById('badgeQrDecoded').textContent = `✓ ${qr.total_decoded || 0}`;
     document.getElementById('badgeQrFailed').textContent = `✗ ${qr.total_failed || 0}`;
     document.getElementById('badgeQrRate').textContent = `${qr.success_rate || 0}%`;
 }
 
 // ════════════════════════════════════════════════════
-// Camera Feeds
+// Images des caméras
 // ════════════════════════════════════════════════════
 
+// Affiche une carte par caméra de drone ; la reconstruit seulement si la liste des drones change, sinon la met à jour.
 function updateCameraFeeds(qrState, simState) {
     const container = document.getElementById('cameraFeeds');
     const drones = qrState.drones || {};
@@ -333,26 +348,27 @@ function updateCameraFeeds(qrState, simState) {
 
     if (droneIds.length === 0) return;
 
-    // Check if we need a full rebuild (drone set changed)
+    // Reconstruction complète seulement si la liste des drones a changé
     const existingIds = Array.from(container.querySelectorAll('.cam-card'))
         .map(el => el.dataset.droneId).sort();
     const needRebuild = existingIds.join(',') !== droneIds.join(',');
 
     if (needRebuild) {
-        // Full build — only on first load or when drones change
+        // Construction complète (premier affichage ou nouveaux drones)
         let html = '';
         for (const id of droneIds) {
             html += _buildCamCardHtml(id, drones[id]);
         }
         container.innerHTML = html;
     } else {
-        // Incremental update — no DOM rebuild, just update src + text
+        // Mise à jour sur place : nouvelle image et nouveaux textes, sans tout reconstruire
         for (const id of droneIds) {
             _updateCamCardInPlace(id, drones[id]);
         }
     }
 }
 
+// Renvoie le HTML de la carte d'une caméra : état du décodage, onglets Annotated / Raw, image, texte lu, compteurs.
 function _buildCamCardHtml(id, dr) {
     const color = DRONE_COLORS[+id % DRONE_COLORS.length];
     const status = dr.last_status || 'none';
@@ -413,20 +429,21 @@ function _buildCamCardHtml(id, dr) {
     </div>`;
 }
 
+// Met à jour la carte existante d'une caméra : nouvelle image (paramètre ?t= anti-cache), état, texte lu, compteurs.
 function _updateCamCardInPlace(id, dr) {
     const status = dr.last_status || 'none';
     const tab = camTabState[id] || 'annotated';
 
-    // Update image src without replacing the element
+    // Nouvelle image sans remplacer l'élément
     const imgEl = document.getElementById(`camImg_${id}`);
     if (imgEl) {
         const rawSrc = `/api/frame/latest_drone_${id}.jpg?t=${Date.now()}`;
         const annSrc = `/api/frame/annotated_drone_${id}.jpg?t=${Date.now()}`;
         const newSrc = tab === 'raw' ? rawSrc : annSrc;
-        // Only update if the base URL changed (avoid unnecessary reloads)
+        // Ne recharger que si l'adresse de base a changé (évite des rechargements inutiles)
         const currentBase = imgEl.src.split('?')[0];
         const newBase = newSrc.split('?')[0];
-        // Always update the timestamp to get fresh frames
+        // Toujours changer le paramètre ?t= pour obtenir l'image la plus récente
         if (imgEl.src === '' || imgEl.naturalWidth === 0 || currentBase.endsWith(newBase.split('/').pop())) {
             imgEl.src = newSrc;
         } else {
@@ -434,7 +451,7 @@ function _updateCamCardInPlace(id, dr) {
         }
     }
 
-    // Update status badge
+    // Étiquette d'état du décodage
     const statusLabel = {
         'success': 'DECODED', 'failed': 'FAILED',
         'cached': 'CACHED', 'none': 'WAITING',
@@ -453,7 +470,7 @@ function _updateCamCardInPlace(id, dr) {
     const card = document.getElementById(`camCard_${id}`);
     if (card) card.setAttribute('data-status', status);
 
-    // Update footer text
+    // Texte lu, méthode de décodage et compteurs en bas de carte
     const qrData = dr.last_data || '—';
     const method = dr.last_method || '—';
     const dataEl = document.getElementById(`camQrData_${id}`);
@@ -472,14 +489,16 @@ function _updateCamCardInPlace(id, dr) {
     if (rateEl) rateEl.textContent = `${dr.success_rate !== undefined ? dr.success_rate : 0}%`;
 }
 
+// Mémorise la vue choisie (annotated ou raw) pour la caméra de ce drone.
 function switchCamTab(droneId, tab) {
     camTabState[droneId] = tab;
 }
 
 // ════════════════════════════════════════════════════
-// Drone Table (with QR columns)
+// Tableau des drones (avec colonnes QR)
 // ════════════════════════════════════════════════════
 
+// Remplit le tableau des drones : état, position, action, énergie libre, gain d'info, innovation, distance, entropie, QR.
 function updateDroneTable(state, qrState) {
     const tbody = document.getElementById('droneTableBody');
     tbody.innerHTML = '';
@@ -492,7 +511,7 @@ function updateDroneTable(state, qrState) {
         const statusTxt = isActive ? 'ACTIVE' : 'LANDED';
         const innov = (d.innovation !== undefined) ? d.innovation.toFixed(4) : '—';
 
-        // QR detection info
+        // Infos de décodage QR de ce drone
         const qrd = qrDrones[String(d.id)] || {};
         const qrStatus = qrd.last_status || '—';
         const qrRate = qrd.success_rate !== undefined ? qrd.success_rate + '%' : '—';
@@ -522,9 +541,10 @@ function updateDroneTable(state, qrState) {
 }
 
 // ════════════════════════════════════════════════════
-// Charts
+// Graphiques de l'onglet Live
 // ════════════════════════════════════════════════════
 
+// Options communes des graphiques : pas d'animation, légende cachée, axes gris.
 const CHART_DEFAULTS = {
     responsive: true,
     maintainAspectRatio: false,
@@ -544,6 +564,7 @@ const CHART_DEFAULTS = {
     },
 };
 
+// Crée les six graphiques de l'onglet Live : entropie, couverture, énergie libre, gain d'information, innovation, taux QR.
 function initCharts() {
     chartEntropy = new Chart(document.getElementById('chartEntropy'), {
         type: 'line',
@@ -591,32 +612,33 @@ function initCharts() {
     });
 }
 
+// Redessine les graphiques de l'onglet Live à partir de l'historique (sous-échantillonné à environ 200 points).
 function updateCharts(history, state) {
     if (!history || history.length === 0) return;
 
-    // Downsample if too many points
+    // Sous-échantillonnage au-delà de 200 points (le dernier point est toujours gardé)
     const maxPts = 200;
     const step = history.length > maxPts ? Math.ceil(history.length / maxPts) : 1;
     const sampled = history.filter((_, i) => i % step === 0 || i === history.length - 1);
 
     const labels = sampled.map(h => h.step);
 
-    // Entropy
+    // Entropie moyenne (incertitude de la carte)
     chartEntropy.data.labels = labels;
     chartEntropy.data.datasets[0].data = sampled.map(h => h.mean_entropy);
     chartEntropy.update();
 
-    // Coverage
+    // Couverture (%)
     chartCoverage.data.labels = labels;
     chartCoverage.data.datasets[0].data = sampled.map(h => h.exploration_pct);
     chartCoverage.update();
 
-    // Info Gain (bar)
+    // Gain d'information par step (barres)
     chartIG.data.labels = labels;
     chartIG.data.datasets[0].data = sampled.map(h => h.step_info_gain);
     chartIG.update();
 
-    // Free Energy per drone
+    // Énergie libre attendue (score de décision de l'AIF), une courbe par drone
     const numDrones = (state.drones || []).length;
     if (chartFE.data.datasets.length !== numDrones) {
         chartFE.data.datasets = [];
@@ -640,32 +662,33 @@ function updateCharts(history, state) {
     }
     chartFE.update();
 
-    // Innovation (mean + EMA)
+    // Innovation (écart entre mesures et carte) : moyenne du step et moyenne glissante EMA
     chartInnovation.data.labels = labels;
     chartInnovation.data.datasets[0].data = sampled.map(h => h.innovation_mean || 0);
     chartInnovation.data.datasets[1].data = sampled.map(h => h.innovation_ema || 0);
     chartInnovation.update();
 }
 
-// ── QR Detection Chart (success rate over time from detection history) ──
+// ── Graphique du taux de réussite du décodage QR ──
 const qrRateHistory = []; // cumulative for chart
 
+// Ajoute le taux de réussite QR actuel comme nouveau point de la courbe ; garde les 200 derniers.
 function updateQrChart(qrState) {
     if (!qrState) return;
     const hist = qrState.history || [];
     if (hist.length === 0) return;
 
-    // Compute rolling success rate (window = last 20 detections)
+    // Taux de réussite glissant (fenêtre = 20 dernières détections)
     const windowSize = 20;
     const total = qrState.total_processed || 1;
 
-    // Add current overall rate as a data point
+    // Ajoute le taux actuel comme nouveau point, repéré par le nombre total d'images traitées
     qrRateHistory.push({
         idx: total,
         rate: qrState.success_rate || 0,
     });
 
-    // Keep last 200 points
+    // Garde les 200 derniers points
     if (qrRateHistory.length > 200) {
         qrRateHistory.splice(0, qrRateHistory.length - 200);
     }
@@ -676,9 +699,10 @@ function updateQrChart(qrState) {
 }
 
 // ════════════════════════════════════════════════════
-// Resilience Events
+// Événements de résilience (onglet Live)
 // ════════════════════════════════════════════════════
 
+// Affiche les événements de résilience (stress, retour à la normale…), du plus récent au plus ancien.
 function updateResilienceEvents(state) {
     const r = state.resilience || {};
     const events = r.events || [];
@@ -692,7 +716,7 @@ function updateResilienceEvents(state) {
     }
     emptyEl.style.display = 'none';
 
-    // Build HTML (newest first)
+    // Liste HTML, du plus récent au plus ancien
     const reversed = [...events].reverse();
     listEl.innerHTML = reversed.map(ev => {
         const evType = ev.type || ev.event || 'evt';
@@ -713,9 +737,10 @@ function updateResilienceEvents(state) {
 }
 
 // ════════════════════════════════════════════════════
-// ══════════  TABS + RESILIENCE + NS-3 + RUNS  ════════
+// ══════════  ONGLETS RESILIENCE, NS-3 ET RUNS  ════════
 // ════════════════════════════════════════════════════
 
+// Couleur des bandes de phase : aucune en phase normale, rouge en « recovery », jaune en « durable ».
 const PHASE_COLORS = {
     normal:   'rgba(16,185,129,0.0)',  // transparent: pas de bande
     recovery: 'rgba(239,68,68,0.18)',
@@ -725,6 +750,7 @@ const PHASE_COLORS = {
 // ── Plugin Chart.js : bandes verticales colorées selon resilience_phase ──
 const phaseBandsPlugin = {
     id: 'phaseBands',
+    // Avant de tracer les courbes, peint une bande colorée sur chaque période de phase non normale.
     beforeDatasetsDraw(chart, args, opts) {
         const phases = (opts && opts.phases) || [];
         if (!phases.length) return;
@@ -743,9 +769,11 @@ const phaseBandsPlugin = {
         ctx.restore();
     }
 };
+// Enregistre cette extension auprès de Chart.js (si la bibliothèque a bien été chargée).
 if (typeof Chart !== 'undefined') Chart.register(phaseBandsPlugin);
 
-// ── Phase bands extraction from history ──
+// ── Découpage de l'historique en périodes de même phase ──
+// Renvoie les périodes {phase, start, end} (en steps) pendant lesquelles la phase de résilience ne change pas.
 function extractPhaseBands(history) {
     if (!history || !history.length) return [];
     const bands = [];
@@ -763,8 +791,10 @@ function extractPhaseBands(history) {
     return bands;
 }
 
+// Graphiques de l'onglet Resilience.
 let chartResEntropy, chartResCoverage, chartResInnovation, chartResActive;
 
+// Crée les quatre graphiques de l'onglet Resilience (entropie, couverture, innovation, drones actifs) avec bandes de phase.
 function initResilienceCharts() {
     const baseOpts = JSON.parse(JSON.stringify(CHART_DEFAULTS));
     baseOpts.plugins = {
@@ -789,6 +819,7 @@ function initResilienceCharts() {
               backgroundColor: 'rgba(16,185,129,.08)', fill: true,
               tension: .3, pointRadius: 0, borderWidth: 2 },
         ]},
+        // Mêmes options, avec l'axe y fixé de 0 à 100 %.
         options: (function(){
             const o = JSON.parse(JSON.stringify(baseOpts));
             o.scales.y.min = 0; o.scales.y.max = 100;
@@ -823,6 +854,7 @@ function initResilienceCharts() {
     });
 }
 
+// Met à jour l'onglet Resilience : courbes avec bandes de phase, cartes (phase, début du stress, cause), liste d'événements.
 function updateResilienceTab(state, history) {
     if (!chartResEntropy) return;  // not initialized yet
     if (!history || !history.length) return;
@@ -832,7 +864,7 @@ function updateResilienceTab(state, history) {
     const cov = history.map(h => h.exploration_pct || 0);
     const innM = history.map(h => h.innovation_mean || 0);
     const innE = history.map(h => h.innovation_ema || 0);
-    // Spike threshold approx : on n'a pas k·σ par step, on dessine EMA + 2·|EMA-mean|
+    // Seuil de pic approché : k·σ n'est pas enregistré à chaque step, on trace EMA + 2 × |moyenne − EMA|
     const spike = history.map(h => {
         const e = h.innovation_ema || 0;
         const m = h.innovation_mean || 0;
@@ -864,7 +896,7 @@ function updateResilienceTab(state, history) {
     chartResActive.data.datasets[0].data = active;
     chartResActive.update();
 
-    // KPI cards
+    // Cartes chiffrées
     const r = state.resilience || {};
     const phase = (state.metrics && state.metrics.resilience_phase) || r.phase || 'normal';
     const pv = document.getElementById('resPhaseValue');
@@ -879,7 +911,7 @@ function updateResilienceTab(state, history) {
     const cause = document.getElementById('resCause');
     if (cause) cause.textContent = r.cause || '—';
 
-    // Events timeline
+    // Liste des événements, du plus récent au plus ancien
     const evList = document.getElementById('resEventsList');
     if (evList) {
         const events = r.events || [];
@@ -899,12 +931,14 @@ function updateResilienceTab(state, history) {
     }
 }
 
-// ══════════ NS-3 TAB ══════════
+// ══════════ ONGLET NS-3 ══════════
 
+// Graphique des latences dans le temps et historique par paire (au plus NS3_MAX_HIST = 200 points par paire).
 let ns3TimeChart;
 const ns3HistoryByPair = {};  // "i-j" -> [{step, lat}, ...]
 const NS3_MAX_HIST = 200;
 
+// Crée le graphique vide des latences NS-3 dans le temps (une courbe par paire de drones).
 function initNs3Charts() {
     const opts = JSON.parse(JSON.stringify(CHART_DEFAULTS));
     opts.plugins = { legend: { display: true, labels: { color: '#94a3b8', font: { size: 10 } } } };
@@ -915,21 +949,25 @@ function initNs3Charts() {
     });
 }
 
+// Renvoie la clé « i-j » d'une paire de drones, le plus petit numéro en premier.
 function pairKey(a, b) {
     const i = Math.min(a, b), j = Math.max(a, b);
     return `${i}-${j}`;
 }
 
+// Renvoie une couleur fixe pour une paire, tirée d'un hachage de sa clé.
 function pairColor(k) {
-    // deterministic color from string hash
+    // même clé → toujours la même couleur
     let h = 0;
     for (const c of k) h = (h * 31 + c.charCodeAt(0)) | 0;
     const colors = ['#22d3ee', '#34d399', '#a78bfa', '#fbbf24', '#f472b6', '#fb923c', '#ef4444', '#3b82f6'];
     return colors[Math.abs(h) % colors.length];
 }
 
+// Met à jour l'onglet NS-3 : cartes réseau, tableau des paires (lien OK / CUT), matrice et courbes des latences.
 function updateNs3Tab(state, ns3Data) {
     const net = (state && state.network) || {};
+    // Écrit le texte v dans l'élément d'identifiant id, s'il existe.
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     setText('ns3Mode', state.ns3_mode || net.ns3_mode || 'none');
     setText('ns3Cloud', net.cloud_link_active ? 'UP' : 'DOWN');
@@ -943,12 +981,12 @@ function updateNs3Tab(state, ns3Data) {
         cloudEl.style.color = net.cloud_link_active ? 'var(--green)' : 'var(--red)';
     }
 
-    // Pairs : prendre depuis ns3Data si dispo (CSV NS-3) sinon depuis network.ns3_pairs
+    // Paires : celles de /api/ns3 (CSV NS-3) si disponibles, sinon celles recopiées dans aif_state.json
     let pairs = [];
     if (ns3Data && Array.isArray(ns3Data.pairs)) pairs = ns3Data.pairs;
     else if (Array.isArray(net.ns3_pairs)) pairs = net.ns3_pairs;
 
-    // Table
+    // Tableau des paires (lien « CUT » si coupé par un stress de la simulation)
     const tbody = document.getElementById('ns3TableBody');
     if (tbody) {
         if (!pairs.length) {
@@ -970,11 +1008,11 @@ function updateNs3Tab(state, ns3Data) {
         }
     }
 
-    // Heatmap
+    // Matrice des latences (carte de chaleur)
     const nDrones = (state.drones || []).length;
     renderNs3Heatmap(pairs, nDrones);
 
-    // Time-series : append current step latencies per pair
+    // Courbes : ajoute les latences du step courant à l'historique de chaque paire
     if (state.step != null && pairs.length) {
         const labelSet = new Set();
         for (const p of pairs) {
@@ -1009,6 +1047,7 @@ function updateNs3Tab(state, ns3Data) {
     }
 }
 
+// Dessine la matrice des latences entre drones (ms) : du bleu (faible) au rouge (forte), valeur écrite dans chaque case.
 function renderNs3Heatmap(pairs, nDrones) {
     const canvas = document.getElementById('ns3Heatmap');
     if (!canvas) return;
@@ -1047,7 +1086,7 @@ function renderNs3Heatmap(pairs, nDrones) {
     ctx.fillStyle = '#0a0f1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // labels
+    // noms des drones sur les deux axes
     ctx.fillStyle = '#94a3b8';
     ctx.font = 'bold 10px Inter, sans-serif';
     ctx.textAlign = 'center';
@@ -1066,7 +1105,7 @@ function renderNs3Heatmap(pairs, nDrones) {
                 ctx.fillRect(x, y, cell - 1, cell - 1);
             } else {
                 const t = Math.min(1, v / maxLat);
-                // colormap : bleu → violet → rouge
+                // échelle de couleurs : bleu → violet → rouge
                 const r = Math.round(40 + 200 * t);
                 const g = Math.round(60 - 30 * t);
                 const b = Math.round(200 - 180 * t);
@@ -1081,10 +1120,12 @@ function renderNs3Heatmap(pairs, nDrones) {
     }
 }
 
-// ══════════ RUNS TAB ══════════
+// ══════════ ONGLET RUNS (vols enregistrés dans logs/runs) ══════════
 
+// Dernière liste de vols reçue de /api/runs.
 let _runsCache = [];
 
+// Demande /api/runs et affiche la liste des vols (tag, planificateur, architecture, mode NS-3, date) ; un clic ouvre la galerie.
 async function loadRunsList() {
     const listEl = document.getElementById('runsList');
     if (!listEl) return;
@@ -1115,6 +1156,7 @@ async function loadRunsList() {
                 <div class="run-time">${run.mtime || ''}</div>
             </div>`;
         }).join('');
+        // Un clic sur un vol ouvre sa galerie d'images
         listEl.querySelectorAll('.run-item').forEach(el => {
             el.addEventListener('click', () => loadRunGallery(el.dataset.tag));
         });
@@ -1123,6 +1165,7 @@ async function loadRunsList() {
     }
 }
 
+// Affiche la galerie des images (PNG) du vol choisi, lues via /api/run/<tag>/img/<nom>.
 function loadRunGallery(tag) {
     const run = _runsCache.find(r => r.tag === tag);
     if (!run) return;
@@ -1149,29 +1192,31 @@ function loadRunGallery(tag) {
     }).join('');
 }
 
-// ══════════ TAB SWITCHING ══════════
+// ══════════ CHANGEMENT D'ONGLET ══════════
 
+// Au chargement : branche les boutons d'onglets, crée les graphiques Resilience et NS-3, charge la liste des vols.
 document.addEventListener('DOMContentLoaded', () => {
-    // Tab buttons
+    // Boutons d'onglets
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
-    // Init resilience + ns-3 charts (separate from main initCharts to avoid double)
+    // Graphiques Resilience et NS-3, créés à part de initCharts (pour ne pas les créer deux fois)
     if (typeof Chart !== 'undefined') {
         try { initResilienceCharts(); } catch (e) { console.warn('initResilienceCharts:', e); }
         try { initNs3Charts(); } catch (e) { console.warn('initNs3Charts:', e); }
     }
     const refresh = document.getElementById('btnRefreshRuns');
     if (refresh) refresh.addEventListener('click', loadRunsList);
-    // Load runs list on first display
+    // Liste des vols chargée dès l'ouverture de la page
     loadRunsList();
 });
 
+// Affiche l'onglet demandé (live, resilience, ns3 ou runs) ; recharge la liste des vols si c'est Runs.
 function switchTab(tab) {
     document.querySelectorAll('.tab-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === `tab-${tab}`));
-    // Re-fetch runs when switching to Runs tab (cheap)
+    // Recharge la liste des vols à chaque ouverture de l'onglet Runs (peu coûteux)
     if (tab === 'runs') loadRunsList();
 }

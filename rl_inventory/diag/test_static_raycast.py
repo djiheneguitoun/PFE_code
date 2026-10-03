@@ -1,5 +1,8 @@
-"""Preuve : un raycast STATIQUE (raycast_mesh, sans refit) sur le mesh fusionné partagé
-est ~100× plus rapide que le chemin dynamique de MultiMeshRayCaster. Aucune modif de l'env."""
+"""Compare, pour un LiDAR, le lancer de rayons dynamique de MultiMeshRayCaster et un lancer statique (raycast_mesh) sur le maillage partagé.
+
+Preuve que le lancer statique est ~100× plus rapide : c'est la solution retenue dans env.py. Ne modifie pas l'environnement.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/diag/test_static_raycast.py --headless --num_envs 32
+"""
 
 import argparse
 
@@ -20,11 +23,13 @@ import torch
 from isaaclab.sensors import MultiMeshRayCaster
 from isaaclab.utils.warp import raycast_mesh
 
+# rend le paquet rl_inventory importable (racine du projet = deux dossiers au-dessus)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from rl_inventory.env import AGENTS, NUM_DRONES, SwarmQREnv, SwarmQREnvCfg  # noqa: E402
 
 
 def timeit(fn, n=20):
+    """Renvoie la durée moyenne d'un appel à fn, en ms, mesurée sur n appels (GPU synchronisé avant et après)."""
     torch.cuda.synchronize()
     t = time.perf_counter()
     for _ in range(n):
@@ -34,6 +39,7 @@ def timeit(fn, n=20):
 
 
 def main():
+    """Crée l'essaim, chronomètre les deux lancers de rayons pour le LiDAR du drone 0, puis affiche le gain et la part de rayons qui touchent."""
     cfg = SwarmQREnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = SwarmQREnv(cfg)
@@ -54,12 +60,14 @@ def main():
 
     # 1) dynamique (ce qu'on subit aujourd'hui), pour 1 LiDAR
     def dyn():
+        """Relance tous les rayons du capteur Isaac (chemin dynamique, maillage remis à jour)."""
         lidar.update(dt, force_recompute=True)
 
     t_dyn = timeit(dyn, 10)
 
     # 2) statique (le correctif proposé), pour 1 LiDAR
     def stat():
+        """Lance les mêmes rayons sur le maillage fixe avec raycast_mesh (chemin statique, portée 8 m)."""
         raycast_mesh(starts_canon, dirs_w, max_dist=8.0, mesh=mesh)
 
     t_stat = timeit(stat, 20)

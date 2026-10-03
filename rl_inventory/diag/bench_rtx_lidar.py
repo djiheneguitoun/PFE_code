@@ -1,12 +1,8 @@
-"""Benchmark RTX LiDAR (MESURE, ne modifie pas l'env du projet).
+"""Mesure la mémoire graphique (VRAM) et la vitesse (mises à jour/s) avec 1, 2, 4, 8 puis 16 lidars RTX (capteur ray-tracé réaliste) dans l'entrepôt.
 
-Charge le vrai entrepôt, crée N RTX LiDAR (capteur ray-tracé réaliste) en nombre
-croissant, et mesure VRAM + vitesse (updates/s) pour chaque N → savoir combien de
-drones-LiDAR réalistes tiennent sur 8 Go et si l'entraînement est viable.
-
+But : savoir combien de drones à lidar réaliste tiennent sur une carte de 8 Go. Ne modifie pas l'environnement du projet.
 Lancement :
-  cd ~/IsaacLab
-  ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/bench_rtx_lidar.py --headless --enable_cameras
+  cd ~/IsaacLab && ./isaaclab.sh -p ~/simulation_mc02/rl_inventory/diag/bench_rtx_lidar.py --headless --enable_cameras
 """
 
 import argparse
@@ -34,10 +30,12 @@ enable_extension("isaacsim.sensors.rtx")
 
 
 def vram_used_gb():
+    """Renvoie (VRAM utilisée, VRAM totale) du GPU, en Go."""
     free, total = torch.cuda.mem_get_info()
     return (total - free) / 1e9, total / 1e9
 
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"
@@ -53,6 +51,7 @@ u0, total = vram_used_gb()
 print(f"[bench] VRAM totale = {total:.2f} Go | utilisée après chargement entrepôt (0 lidar) = {u0:.2f} Go\n")
 
 def make_rtx_lidar(i):
+    """Crée le lidar RTX n° i (modèle Example_Rotary) et son flux de données ; renvoie l'annotateur qui lit ses mesures."""
     res, prim = omni.kit.commands.execute(
         "IsaacSensorCreateRtxLidar",
         path=f"/World/RtxLidar_{i}",

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
+"""Phase 11 : premier passage à Isaac Sim + Pegasus — fait apparaître N drones Iris dans un entrepôt.
+
+Les drones n'ont aucun pilote automatique (pas de « backend » de commande) : ils restent posés.
+On vérifie seulement que la scène, l'entrepôt et les modèles de drones se chargent.
+Lancé par 11_launch_isaac_sim_drones.sh, ou : python scripts/11_isaac_sim_drones.py --num-drones 3 [--headless]
+"""
 
 import argparse
 import signal
 import sys
 
+# Affiche chaque ligne tout de suite (sortie lisible même redirigée vers un fichier).
 sys.stdout.reconfigure(line_buffering=True)
 
 
 def parse_args():
+    """Lit les options : --num-drones (3), --headless (sans fenêtre), --spacing (écart entre drones, 3 m)."""
     parser = argparse.ArgumentParser(description="Isaac Sim multi-drone simulation")
     parser.add_argument("--num-drones", type=int, default=3)
     parser.add_argument("--headless", action="store_true")
@@ -16,6 +24,7 @@ def parse_args():
 
 
 def create_sim_app(headless):
+    """Démarre Isaac Sim (fenêtre 1280×720, ou sans fenêtre) sans contrôle de version du pilote NVIDIA ; renvoie l'application."""
     from isaacsim import SimulationApp
 
     config = {
@@ -29,6 +38,7 @@ def create_sim_app(headless):
 
 
 def setup_scene():
+    """Crée le monde Pegasus avec un sol, ajoute l'entrepôt « Simple_Warehouse » (premier chemin USD qui se charge) et renvoie le monde."""
     from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 
     try:
@@ -56,6 +66,7 @@ def setup_scene():
 
 
 def create_drones(num_drones, spacing):
+    """Place `num_drones` drones Iris en ligne sur l'axe x (écart `spacing` m, rangée centrée sur 0, z = 0,1 m) et renvoie la liste."""
     from pegasus.simulator.params import ROBOTS
     from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 
@@ -79,10 +90,12 @@ def create_drones(num_drones, spacing):
 
 
 def main():
+    """Lance Isaac Sim, crée la scène et les drones, puis fait avancer la physique jusqu'à Ctrl+C."""
     args = parse_args()
 
     running = True
     def on_signal(sig, frame):
+        """Demande l'arrêt propre de la boucle de simulation (Ctrl+C ou SIGTERM)."""
         nonlocal running
         running = False
     signal.signal(signal.SIGINT, on_signal)

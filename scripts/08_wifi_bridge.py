@@ -1,38 +1,46 @@
 #!/usr/bin/env python3
+"""Phase 08 : pont réseau WiFi — mesure en continu la qualité du lien entre chaque paire de drones.
+
+RSSI (puissance reçue, en dBm) calculé par lancer de rayons Sionna dans la scène 3D de l'entrepôt ; latence (ms)
+mesurée par ns-3 (simulateur de réseau, scénario drone-wifi-scenario), ou estimée si ns-3 est absent.
+Lit /tmp/drone_positions.csv (écrit par 07 / 07b) ; écrit /tmp/drone_rssi_latency.csv et le journal /tmp/drone_bridge_log.csv.
+Usage : python3 scripts/08_wifi_bridge.py [--test] [--cycles N] [--no-render] [--no-ns3] [--csv chemin]
+"""
 
 import argparse, csv, itertools, math, os, signal, subprocess, sys, time
 from datetime import datetime
 import numpy as np
 
-#  Paths 
+# Fichiers : scène 3D de l'entrepôt pour Sionna (fournie par ns3-sionna), positions lues, résultats écrits
 SCENE_XML = os.path.expanduser(
     "~/ns-allinone-3.40/ns-3.40/contrib/sionna/model/ns3sionna/"
     "models/warehouse/warehouse.xml"
 )
-POS_CSV    = "/tmp/drone_positions.csv"
-RSSI_CSV   = "/tmp/drone_rssi_latency.csv"
-LOG_CSV    = "/tmp/drone_bridge_log.csv"
+POS_CSV    = "/tmp/drone_positions.csv"    # entrée : « id,x,y,z » (m) par drone
+RSSI_CSV   = "/tmp/drone_rssi_latency.csv" # dernière mesure par paire (écrasé à chaque cycle)
+LOG_CSV    = "/tmp/drone_bridge_log.csv"   # journal : une ligne par paire et par cycle
 RENDER_DIR = "/tmp/sionna_renders"
-RENDER_PNG = os.path.join(RENDER_DIR, "latest.png")
+RENDER_PNG = os.path.join(RENDER_DIR, "latest.png")  # image vue de dessus (rendu Sionna)
 
-#  NS-3 WiFi 
+# ns-3 (scénario WiFi entre drones, sources dans scenarios/)
 NS3_DIR      = os.path.expanduser("~/ns-allinone-3.40/ns-3.40")
 NS3_BIN      = os.path.join(NS3_DIR, "ns3")
-NS3_OUT_CSV  = "/tmp/ns3_output.csv"
+NS3_OUT_CSV  = "/tmp/ns3_output.csv"       # latences écrites par ns-3
 NS3_SCENARIO = "drone-wifi-scenario"
 
-#  WiFi 802.11ax parameters 
-TX_POWER_DBM  = 20.0
-FREQUENCY_GHZ = 5.18
-BANDWIDTH_MHZ = 20
+# Paramètres radio WiFi 802.11ax utilisés par Sionna
+TX_POWER_DBM  = 20.0   # dBm : puissance d'émission
+FREQUENCY_GHZ = 5.18   # GHz : canal WiFi de la bande 5 GHz
+BANDWIDTH_MHZ = 20     # MHz
 
-#  Drone colors for render 
+# Couleurs (rouge, vert, bleu) des drones 0, 1, 2 dans le rendu
 COLORS = [(1, 0, 0), (0, 0.8, 0), (0.2, 0.4, 1)]
 
-running = True
+running = True  # passe à False sur Ctrl+C
 
 
 def signal_handler(sig, frame):
+    """Demande l'arrêt de la boucle principale (Ctrl+C)."""
     global running
     running = False
     print("\n  Stopping...")
@@ -41,8 +49,7 @@ def signal_handler(sig, frame):
 
 
 def read_positions_csv(path):
-    """Lit les positions des drones depuis un CSV → {drone_id: (x, y, z)}.
-    Garde la dernière position par drone."""
+    """Lit le CSV des positions (« id,x,y,z » ou « temps,id,x,y,z ») et renvoie {id: (x, y, z)}, dernière ligne par drone."""
     latest = {}
     try:
         with open(path) as f:
@@ -63,7 +70,7 @@ def read_positions_csv(path):
 
 
 def fake_positions(tick):
-    """Generate 3 drones orbiting inside the warehouse (--test mode)."""
+    """Renvoie 3 positions fictives qui tournent en rond dans l'entrepôt (mode --test, sans SITL)."""
     t = tick * 0.3
     return {
         0: (-3.0 + 1.5 * math.sin(t),       1.0 * math.cos(t),       4.0),
@@ -73,13 +80,12 @@ def fake_positions(tick):
 
 
 
-_ns3_process = None
+_ns3_process = None  # processus ns-3 lancé en arrière-plan (ou None)
 
 
 def launch_ns3(n_drones=3, sim_time=300):
-    """Lance NS-3 WiFi ad-hoc en arrière-plan (mode temps réel).
-    NS-3 lit les positions depuis le même CSV que script 08 écrit,
-    mesure la latence réelle via FlowMonitor, et écrit dans NS3_OUT_CSV."""
+    """Lance ns-3 en arrière-plan (WiFi ad hoc, canal « log-distance ») : il relit le CSV des positions, mesure la latence
+    (FlowMonitor) et l'écrit dans NS3_OUT_CSV. Renvoie vrai si le processus tourne encore après 2 s."""
     global _ns3_process
 
     if not os.path.isfile(NS3_BIN):
@@ -121,8 +127,7 @@ def launch_ns3(n_drones=3, sim_time=300):
 
 
 def read_ns3_latency():
-    """Lit le CSV de sortie NS-3 → {(drone_i, drone_j): latency_ms}.
-    Garde la dernière mesure par paire."""
+    """Lit le CSV de ns-3 et renvoie {(i, j): latence en ms} avec i < j, dernière mesure par paire."""
     latest = {}
     try:
         with open(NS3_OUT_CSV) as f:
@@ -142,7 +147,7 @@ def read_ns3_latency():
 
 
 def stop_ns3():
-    """Arrête proprement le processus NS-3."""
+    """Arrête le processus ns-3 (terminate, puis kill s'il tourne encore après 5 s)."""
     global _ns3_process
     if _ns3_process and _ns3_process.poll() is None:
         _ns3_process.terminate()
@@ -156,12 +161,11 @@ def stop_ns3():
 
 
 def compute_rssi(scene, pos_a, pos_b):
-    """Ray-trace between two positions → (path_loss_dB, propagation_delay_ns).
-    NOTE: propagation_delay_ns est le délai physique EM uniquement (~ns).
-    La latence réseau réelle est fournie par NS-3 (~ms)."""
+    """Trace les rayons entre deux positions (Sionna) et renvoie (affaiblissement en dB, délai de propagation en ns), ou
+    (None, None) sans trajet. Ce délai physique (~ns) n'est pas la latence réseau, fournie par ns-3 (~ms)."""
     from sionna.rt import Transmitter, Receiver, PlanarArray, PathSolver
 
-    # Clean old devices
+    # Retire l'émetteur et le récepteur du calcul précédent
     for name in list(scene.transmitters.keys()):
         scene.remove(name)
     for name in list(scene.receivers.keys()):
@@ -192,6 +196,7 @@ def compute_rssi(scene, pos_a, pos_b):
 
     delay_ns = int(round(np.min(valid) * 1e9))
 
+    # Puissance moyenne reçue sur 64 sous-porteuses du canal de 20 MHz → affaiblissement en dB
     num_sc = 64
     sc_spacing = BANDWIDTH_MHZ * 1e6 / num_sc
     freqs = np.arange(num_sc) * sc_spacing
@@ -210,7 +215,7 @@ def compute_rssi(scene, pos_a, pos_b):
 
 
 def render_scene(scene, positions):
-    """Render warehouse with drones from top-down view."""
+    """Enregistre dans RENDER_PNG une vue de dessus (caméra à 25 m) de l'entrepôt avec un point coloré par drone."""
     from sionna.rt import Transmitter, Camera
 
     for name in list(scene.transmitters.keys()):
@@ -238,14 +243,14 @@ def render_scene(scene, positions):
 
 
 def write_fake_positions_csv(positions):
-    """Write test positions to CSV (only for --test mode)."""
+    """Écrit les positions fictives dans le CSV des positions (mode --test seulement)."""
     with open(POS_CSV, "w") as f:
         for did, (x, y, z) in sorted(positions.items()):
             f.write(f"{did},{x:.4f},{y:.4f},{z:.4f}\n")
 
 
 def write_rssi_csv(results):
-    """Write RSSI (Sionna) + latency (NS-3) results to CSV (overwrite)."""
+    """Réécrit RSSI_CSV : une ligne par paire avec RSSI (Sionna), latence (ns-3 ou estimée), distance et source."""
     with open(RSSI_CSV, "w") as f:
         f.write("drone_a,drone_b,rssi_dBm,latency_ms,distance_m,latency_source\n")
         for row in results:
@@ -253,7 +258,7 @@ def write_rssi_csv(results):
 
 
 def append_log(tick, positions, results):
-    """Append one line per pair to the running log."""
+    """Ajoute au journal LOG_CSV une ligne par paire : heure, n° de cycle, mesures et positions des deux drones."""
     ts = time.strftime("%H:%M:%S")
     write_header = not os.path.exists(LOG_CSV) or os.path.getsize(LOG_CSV) == 0
     with open(LOG_CSV, "a") as f:
@@ -270,11 +275,11 @@ def append_log(tick, positions, results):
                     f"{pb[0]:.2f},{pb[1]:.2f},{pb[2]:.2f}\n")
 
 
-W = 72  # display width
+W = 72  # largeur d'affichage (caractères)
 
 
 def rssi_bar(rssi_val):
-    """Return a signal-quality bar + label from RSSI."""
+    """Renvoie une barre de qualité selon le RSSI : > -50 dBm excellent, > -60 bon, > -70 moyen, sinon faible."""
     if rssi_val > -50:
         return "█████ Excellent"
     elif rssi_val > -60:
@@ -286,21 +291,21 @@ def rssi_bar(rssi_val):
 
 
 def print_table(tick, positions, results, elapsed):
-    """Print a compact, continuously scrolling block for one tick."""
+    """Affiche un bloc par cycle : positions, puis distance, RSSI, latence et qualité de chaque paire (ou BLOCKED)."""
     now = datetime.now().strftime("%H:%M:%S")
 
-    # ── separator / tick header ──
+    # ── séparateur et en-tête du cycle ──
     label = f"  Tick {tick}  ·  {now}  ·  {elapsed:.1f}s  "
     print(f"\n{'─' * 4}{label}{'─' * max(4, W - 4 - len(label))}")
 
-    # ── positions on one line ──
+    # ── positions sur une ligne ──
     pos_parts = []
     for did in sorted(positions.keys()):
         x, y, z = positions[did]
         pos_parts.append(f"D{did}({x:.1f},{y:.1f},{z:.1f})")
     print(f"  Pos: {'  '.join(pos_parts)}")
 
-    # ── RSSI + Latency pairs ──
+    # ── RSSI et latence par paire ──
     for i, row in enumerate(results):
         id_a, id_b, rssi, latency, dist = row[0], row[1], row[2], row[3], row[4]
         lat_src = row[5] if len(row) > 5 else ""
@@ -316,6 +321,7 @@ def print_table(tick, positions, results, elapsed):
 
 
 def main():
+    """Charge la scène Sionna, lance ns-3, puis à chaque nouvelle position calcule et enregistre RSSI et latence de chaque paire."""
     parser = argparse.ArgumentParser(description="Live Bridge: RSSI (Sionna) + Latence (NS-3 WiFi)")
     parser.add_argument("--test", action="store_true",
                         help="Fake moving drones (no SITL needed)")
@@ -333,7 +339,7 @@ def main():
 
     print()
 
-    # Load Sionna scene 
+    # Charge la scène Sionna de l'entrepôt
     print("\n  Loading Sionna scene...")
     from sionna.rt import load_scene
     scene = load_scene(SCENE_XML, merge_shapes=False)
@@ -341,7 +347,7 @@ def main():
     scene.bandwidth = BANDWIDTH_MHZ * 1e6
     print(f"  ✓ Scene loaded — {len(scene.objects)} objects")
 
-    #  Launch NS-3 WiFi 
+    # Lance ns-3 WiFi (en mode test, écrit d'abord des positions fictives pour qu'il démarre)
     ns3_ok = False
     if not args.no_ns3:
         if args.test:
@@ -363,7 +369,7 @@ def main():
     while running:
         t0 = time.time()
 
-        #  1. Get positions 
+        # 1. Positions : fictives (--test) ou lues dans le CSV ; il faut au moins 2 drones
         if args.test:
             positions = fake_positions(tick)
             write_fake_positions_csv(positions)
@@ -377,26 +383,26 @@ def main():
                 tick += 1
                 continue
 
-        # Skip RSSI if positions haven't changed
+        # 2. Rien à recalculer si les positions n'ont pas changé
         if positions == last_positions:
             time.sleep(0.5)
             tick += 1
             continue
         last_positions = dict(positions)
 
-        #  3. Compute RSSI 
+        # 3. Mesures pour chaque paire de drones
         drone_ids = sorted(positions.keys())
         pairs = list(itertools.combinations(drone_ids, 2))
         results = []
 
-        # Lire la latence NS-3 
+        # Dernières latences écrites par ns-3
         ns3_lat = read_ns3_latency() if ns3_ok else {}
 
         for id_a, id_b in pairs:
             pa, pb = positions[id_a], positions[id_b]
             dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(pa, pb)))
 
-            # RSSI via Sionna ray-tracing 
+            # RSSI (dBm) = puissance émise - affaiblissement calculé par Sionna
             try:
                 pl, _prop_delay = compute_rssi(scene, pa, pb)
                 if pl is None:
@@ -406,7 +412,7 @@ def main():
             except Exception:
                 rssi_str = "error"
 
-            # Latence via NS-3 WiFi 
+            # Latence : valeur ns-3 si disponible, sinon estimation = propagation (distance / c) + 2 ms fixes
             pair_key = (min(id_a, id_b), max(id_a, id_b))
             lat_ms = ns3_lat.get(pair_key)
             if lat_ms is not None:
@@ -421,13 +427,13 @@ def main():
 
             results.append((id_a, id_b, rssi_str, lat_str, f"{dist:.2f}", lat_src))
 
-        #  4. Write RSSI CSV 
+        # 4. Dernières mesures dans RSSI_CSV
         write_rssi_csv(results)
 
-        #  5. Append log 
+        # 5. Ajout au journal
         append_log(tick, positions, results)
 
-        #  6. Render 
+        # 6. Image vue de dessus (une erreur de rendu est ignorée)
         if not args.no_render:
             try:
                 render_scene(scene, positions)
@@ -436,7 +442,7 @@ def main():
 
         elapsed = time.time() - t0
 
-        #  7. Display table 
+        # 7. Affichage du cycle
         print_table(tick, positions, results, elapsed)
 
         tick += 1

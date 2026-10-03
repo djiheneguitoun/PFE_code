@@ -1,13 +1,9 @@
-"""Banc du contrôleur — étape 3.
+"""Banc du contrôleur de vol (étape 3), dans Isaac Sim avec ArduPilot SITL (pilote automatique simulé).
 
-  banc.py --mode freinage           trois lois d'approche sur le même trajet, trajectoires enregistrées
-  banc.py --mode poses --poses 100  poses tirées devant les racks, transit + approche + lecture du QR
-  banc.py --mode essaim             trois drones décollent et volent en même temps
-
-Commande : DISPLAY=:1 PYTHONUNBUFFERED=1 timeout -s KILL 4h ~/isaac5_env/bin/python banc.py --mode ...
-
-Le banc vérifie sa chaîne avant de mesurer (calibration de la caméra), enregistre la position
-vraie du drone à chaque pas, et s'arrête si un drone ne décolle pas.
+Modes : freinage (3 façons de s'arrêter sur le même trajet de 4 m), poses (--poses poses tirées devant
+les racks : trajet, arrivée, lecture du QR), essaim (3 drones volent en même temps). Enregistre la
+position vraie à chaque pas. Lancé par campagne.sh ; seul, par exemple :
+DISPLAY=:1 PYTHONUNBUFFERED=1 timeout -s KILL 4h ~/isaac5_env/bin/python banc.py --mode poses --poses 100
 """
 
 from __future__ import annotations
@@ -35,6 +31,8 @@ parser.add_argument("--v-transit", type=float, default=None)
 parser.add_argument("--nom", default=None)
 args, _ = parser.parse_known_args()
 
+# Nom des sorties, écrites dans ce dossier : <nom>.json (freinage, essaim),
+# ou <nom>.jsonl et meta_<nom>.json (poses).
 NOM = args.nom or args.mode
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -57,15 +55,15 @@ from swarm_qr.env.pilot import Clock, Pilot  # noqa: E402
 from swarm_qr.experiments import _img  # noqa: E402
 from swarm_qr.experiments._vol import ALT_TRANSIT_MIN, allee, chemin  # noqa: E402
 
-FLY_ALT = 1.6
-DEGAGEMENT_MIN = 0.50          # hélices 0,26 m + oscillation mesurée 0,21 m + marge
-MARGE_MUR = 0.8
-Z_MIN, Z_MAX = 1.2, 5.5
-D_POSE = (1.5, 3.2)            # distance caméra-panneau tirée pour les poses
+FLY_ALT = 1.6                  # m : altitude de décollage
+DEGAGEMENT_MIN = 0.50          # m au rack, au moins : hélices 0,26 + oscillation mesurée 0,21 + marge
+MARGE_MUR = 0.8                # m : distance minimale d'une cible aux murs
+Z_MIN, Z_MAX = 1.2, 5.5        # m : altitudes permises pour une cible
+D_POSE = (1.5, 3.2)            # m : distance caméra-panneau tirée pour les poses
 ALPHA_POSE = 40.0              # degrés de biais au plus
-D_APPARENTE_MAX = 3.8          # reste dans la zone de lecture mesurée à l'étape 2
+D_APPARENTE_MAX = 3.8          # m : distance / cos(angle) maximale (zone fiable mesurée à l'étape 2)
 FENETRE_FREINAGE = 20.0        # s simulées enregistrées par essai
-REPETITIONS = 3
+REPETITIONS = 3                # essais par loi de freinage
 RECUL_FREINAGE = 4.0           # m entre le départ et la cible, le long de l'allée
 COUCHE_ESSAIM = 0.7            # m d'écart d'altitude entre drones en transit
 
@@ -73,18 +71,20 @@ COUCHE_ESSAIM = 0.7            # m d'écart d'altitude entre drones en transit
 # ---------------------------------------------------------------- géométrie
 
 def cap_vers_panneau(cible_cam, tag) -> float:
-    """Le cap qui met le panneau dans l'axe de la caméra gauche."""
+    """Renvoie le cap du drone (rad) qui met le panneau dans l'axe de la caméra gauche."""
     v = np.array(tag.position, float) - np.array(cible_cam, float)
     return math.atan2(v[1], v[0]) - math.pi / 2.0
 
 
 def consigne_drone(cible_cam, psi) -> np.ndarray:
-    """La caméra gauche est décalée du corps : viser avec elle, pas avec le corps."""
+    """Renvoie la position du drone qui amène sa caméra gauche (10 cm sur le côté, 11 cm plus bas)
+    en `cible_cam`."""
     lateral = np.array([-math.sin(psi), math.cos(psi), 0.0]) * CAMERAS.side_offset
     return np.array(cible_cam, float) - lateral + np.array([0.0, 0.0, CAMERAS.below])
 
 
 def degagement(p, layout) -> float:
+    """Renvoie la distance (m) entre le point et la face du rack le plus proche qu'il longe (99 si aucun)."""
     d = 99.0
     for r in layout.racks:
         y0, y1 = r.y_bounds
@@ -94,13 +94,15 @@ def degagement(p, layout) -> float:
 
 
 def dans_l_entrepot(p) -> bool:
+    """Renvoie vrai si le point est à plus de 80 cm des murs et entre 1,2 et 5,5 m d'altitude."""
     return (INTERIOR.x_min + MARGE_MUR < p[0] < INTERIOR.x_max - MARGE_MUR
             and INTERIOR.y_min + MARGE_MUR < p[1] < INTERIOR.y_max - MARGE_MUR
             and Z_MIN < p[2] < Z_MAX)
 
 
 def pose_devant(rng, tag, layout):
-    """Une pose de lecture tirée devant un panneau ; None si elle n'est pas volable."""
+    """Tire une pose de lecture devant le panneau (1,5 à 3,2 m, jusqu'à 40° de biais) ; renvoie
+    (position du drone, cap, distance, angle), ou None si elle est trop loin à lire ou pas volable."""
     D = rng.uniform(*D_POSE)
     a = math.radians(rng.uniform(-ALPHA_POSE, ALPHA_POSE))
     if D / math.cos(a) > D_APPARENTE_MAX:
@@ -117,11 +119,15 @@ def pose_devant(rng, tag, layout):
 
 
 def panneaux_lisibles(scene):
+    """Renvoie les panneaux tournés vers ±X que la caméra peut viser avec le drone entre 1,2 et
+    5,5 m d'altitude."""
     return [t for t in scene.tags if abs(t.normal[0]) > 0.9
             and Z_MIN < t.position[2] + CAMERAS.below < Z_MAX]
 
 
 def verifie_calibration(cam) -> np.ndarray:
+    """Vérifie que la focale relue (fx = fy) égale la valeur calculée à 1 pixel près, sinon arrête ;
+    renvoie la matrice de calibration K."""
     K = np.asarray(cam.get_intrinsics_matrix(), dtype=float)
     fx_attendu = CAMERAS.side_width / (2.0 * math.tan(math.radians(CAMERAS.fov_deg) / 2.0))
     if abs(K[0, 0] - fx_attendu) > 1.0 or abs(K[0, 0] - K[1, 1]) > 0.1:
@@ -133,10 +139,13 @@ def verifie_calibration(cam) -> np.ndarray:
 # ---------------------------------------------------------------- drones
 
 def accesseurs(scene, i):
+    """Renvoie trois fonctions qui lisent la position, le cap et la vitesse vrais du drone `i`."""
     return (lambda: scene.position(i)), (lambda: scene.yaw(i)), (lambda: scene.velocity(i))
 
 
 def demarre(scene, clock, i) -> Pilot:
+    """Connecte, arme et fait décoller le drone `i` à 1,6 m ; renvoie son pilote, ou arrête le banc
+    s'il ne décolle pas."""
     pilot = Pilot(scene.world, i, clock)
     if not pilot.ready(FLY_ALT, lambda: float(scene.position(i)[2])):
         raise RuntimeError(f"le drone {i} n'a pas decolle")
@@ -144,6 +153,8 @@ def demarre(scene, clock, i) -> Pilot:
 
 
 def controleur(scene, pilot, i, **kw) -> control.Controleur:
+    """Crée le contrôleur de vol du drone `i`, branché sur sa position, son cap et sa vitesse vrais
+    (avec la vitesse de transit --v-transit si elle est donnée)."""
     get_pos, get_yaw, get_vel = accesseurs(scene, i)
     if args.v_transit is not None:
         kw.setdefault("v_transit", args.v_transit)
@@ -151,6 +162,8 @@ def controleur(scene, pilot, i, **kw) -> control.Controleur:
 
 
 def lecture(scene, K, tag, i=0) -> dict:
+    """Photographie avec la caméra gauche du drone `i` et lit le QR visé (zxing) ; renvoie lu ou non,
+    distance vraie et distance vue dans l'image (m)."""
     img = _img.to_bgr(scene.capture("left", i))
     L = P.lire(img, K, tag.size, cible=tag.tag_id, decodeur="zxing")
     cam_pos = np.asarray(scene.cameras[i]["left"].get_world_pose()[0], float)
@@ -160,6 +173,8 @@ def lecture(scene, K, tag, i=0) -> dict:
 
 
 def monte(n_drones: int):
+    """Construit l'entrepôt avec `n_drones` drones SITL, lance la simulation et vérifie la caméra ;
+    renvoie (plan de l'entrepôt, scène, calibration K)."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=True, n_drones=n_drones)
     scene.world.reset()
@@ -170,12 +185,14 @@ def monte(n_drones: int):
 
 
 class Trace:
-    """Position vraie, vitesse et phase à chaque pas."""
+    """Trajectoire d'un drone : à chaque pas, temps, position vraie, vitesse, phase du contrôleur et cap."""
 
     def __init__(self):
+        """Crée une trajectoire vide."""
         self.lignes = []
 
     def __call__(self, ctrl):
+        """Ajoute la ligne [t (s), x, y, z (m), vx, vy, vz (m/s), phase, cap (rad)] lue sur le contrôleur."""
         p = ctrl.get_pos()
         v = ctrl.get_vel()
         self.lignes.append([round(ctrl.pilot.sim_clock, 3), *[round(float(x), 4) for x in p],
@@ -186,6 +203,8 @@ class Trace:
 # ---------------------------------------------------------------- freinage
 
 def mode_freinage() -> None:
+    """Compare les trois lois d'arrêt (proportionnel, coupe, autopilote) sur le même trajet de 4 m,
+    3 essais chacune, 20 s enregistrées par essai ; écrit freinage.json."""
     layout, scene, K = monte(1)
     clock = Clock(scene.world)
     pilot = demarre(scene, clock, 0)
@@ -243,6 +262,8 @@ def mode_freinage() -> None:
 # ---------------------------------------------------------------- poses
 
 def mode_poses() -> None:
+    """Envoie le drone vers --poses poses tirées au hasard et lit le QR à chaque arrivée ;
+    écrit poses.jsonl et meta_poses.json."""
     layout, scene, K = monte(1)
     clock = Clock(scene.world)
     pilot = demarre(scene, clock, 0)
@@ -296,6 +317,8 @@ def mode_poses() -> None:
 # ---------------------------------------------------------------- essaim
 
 def mode_essaim() -> None:
+    """Fait voler 3 drones en même temps vers 3 allées différentes, puis vers une seconde pose dans
+    la même allée ; lit les QR et écrit essaim.json."""
     n = 3
     layout, scene, K = monte(n)
     clock = Clock(scene.world)
@@ -305,6 +328,7 @@ def mode_essaim() -> None:
     panneaux = panneaux_lisibles(scene)
 
     def cible_dans_allee(exclues):
+        """Tire une pose de lecture dans une allée hors de `exclues` ; renvoie (panneau, tirage, allée)."""
         for _ in range(2000):
             tag = rng.choice(panneaux)
             tirage = pose_devant(rng, tag, layout)
@@ -324,9 +348,12 @@ def mode_essaim() -> None:
     rapport = {"seed": args.seed, "drones": n, "manches": []}
 
     def manche(nom, affectations):
+        """Fait voler les 3 drones ensemble jusqu'à leurs cibles, lit les QR et ajoute la manche au rapport."""
         traces = [Trace() for _ in range(n)]
         for i, (tag, (cible, psi, D, alpha)) in enumerate(affectations):
             points = chemin(layout, scene.position(i), cible)
+            # Chaque drone transite à sa propre altitude (1,6 m, 2,3 m, 3,0 m),
+            # car le contrôleur n'évite pas les autres drones.
             for w in points:
                 w[2] = ALT_TRANSIT_MIN + COUCHE_ESSAIM * i
             ctrls[i].assigne(control.Consigne(cible, psi), points)
@@ -335,6 +362,7 @@ def mode_essaim() -> None:
         mur0 = time.monotonic()
         t0 = clock.t
         pas = 0
+        # Une seule boucle pour les 3 drones : chacun envoie sa commande, puis le monde avance d'un pas.
         while not all(c.phase in control.TERMINALES for c in ctrls):
             control.pas(ctrls, clock)
             for c, tr in zip(ctrls, traces):
@@ -375,6 +403,7 @@ def mode_essaim() -> None:
     print(f"rapport dans {NOM}.json")
 
 
+# Valeur de --mode -> fonction lancée ; le simulateur est toujours fermé à la fin, même après une erreur.
 MODES = {"freinage": mode_freinage, "poses": mode_poses, "essaim": mode_essaim}
 
 try:

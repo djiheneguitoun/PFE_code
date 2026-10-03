@@ -1,19 +1,22 @@
-"""Ce que chaque autopilote a écrit dans son journal de bord : modes, erreurs, messages, à partir
-d'un instant donné. Sert à comprendre une chute vue de l'intérieur du drone.
+"""Affiche ce que chaque pilote ArduPilot a écrit dans son journal (.BIN) depuis un instant : modes, erreurs, messages.
 
-    journaux_ardupilot.py --dossier experiments/11_mission/eval_nominal --depuis 200
+Sert à comprendre une chute vue de l'intérieur du drone (lit <dossier>/ardupilot_logs/drone_*/*.BIN, sans simulateur).
+    journaux_ardupilot.py --dossier "experiments/11_mission/tests of system/eval_nominal" --depuis 200   (depuis swarm_qr/)
 """
 import argparse
 from pathlib import Path
 
 from pymavlink import DFReader
 
+# numéro de mode de vol ArduCopter → nom ; ROUTINE : bouts de texte des messages de routine (démarrage,
+# calibration, paramètres…) : un message qui en contient un n'est pas affiché
 MODES = {0: "STABILIZE", 2: "ALT_HOLD", 3: "AUTO", 4: "GUIDED", 5: "LOITER", 6: "RTL", 9: "LAND", 16: "POSHOLD", 17: "BRAKE"}
 ROUTINE = ("ArduCopter", "ChibiOS", "RCOut", "Frame", "IMU", "Calibrat", "GPS", "New mission", "New rally",
            "New fence", "RC Protocol", "Param", "Fence", "PreArm", "Ground", "yaw alignment", "is using", "origin set")
 
 
 def lit(fichier: Path, depuis: float) -> None:
+    """Affiche les changements de mode, les erreurs et les messages non routiniers d'un journal .BIN, à partir de `depuis` (s)."""
     log = DFReader.DFReader_binary(str(fichier))
     t0, t = None, 0.0
     while True:
@@ -34,6 +37,7 @@ def lit(fichier: Path, depuis: float) -> None:
 
 
 def main() -> None:
+    """Parcourt les journaux de chaque drone du dossier (ardupilot_logs/drone_*/) et les affiche."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--dossier", required=True)
     ap.add_argument("--depuis", type=float, default=0.0, help="secondes depuis le debut du journal")

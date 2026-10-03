@@ -1,9 +1,7 @@
-"""L'oscillation d'attitude, mesurée dans les journaux de bord des autopilotes : l'erreur maximale
-entre roulis commandé et roulis réel par fenêtre de 20 s, pour chaque drone. Un vol sain reste
-sous 3 degrés ; le vol du 10-09 19:31 passait de 2 à 31 degrés en quarante secondes avant le
-retournement.
+"""Mesure l'oscillation d'attitude dans les journaux ArduPilot : écart max entre roulis/tangage commandés et réels, par fenêtre de 20 s.
 
-    oscillation.py --dossier experiments/11_mission/eval_nominal
+Un vol sain reste sous environ 3° ; le vol du 10/09 à 19:31 est passé de 2 à 31° en 40 s avant de se retourner.
+    oscillation.py --dossier "experiments/11_mission/tests of system/eval_nominal"   (depuis swarm_qr/, sans simulateur)
 """
 import argparse
 from pathlib import Path
@@ -11,10 +9,11 @@ from pathlib import Path
 import numpy as np
 from pymavlink import DFReader
 
-SEUIL = 3.0
+SEUIL = 3.0     # degrés : écart d'un vol sain ; le verdict « OSCILLATION » tombe au-delà de 3 × SEUIL = 9°
 
 
 def erreurs(fichier: Path) -> np.ndarray:
+    """Lit les messages ATT d'un journal .BIN ; renvoie un tableau (temps s, |écart de roulis|, |écart de tangage| en degrés)."""
     log = DFReader.DFReader_binary(str(fichier))
     t0, out = None, []
     while True:
@@ -29,6 +28,7 @@ def erreurs(fichier: Path) -> np.ndarray:
 
 
 def main() -> None:
+    """Affiche pour chaque drone l'écart max par fenêtre et le verdict (sain ou OSCILLATION), puis un verdict global."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--dossier", required=True)
     ap.add_argument("--fenetre", type=float, default=20.0)

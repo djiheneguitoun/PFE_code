@@ -1,17 +1,8 @@
-"""Faire choisir la bonne zone à un modèle vision-langage : une variante par cause possible.
-
-Le banc de base (`banc.py`) a montré un modèle proche du hasard. Ce fichier cherche pourquoi,
-en changeant une seule chose à la fois, sur les mêmes cas et avec les mêmes références :
-
-  comptage      contrôle de perception : combien de zones vois-tu ? (rien à voir avec la tâche)
-  image         la question d'origine, images seules
-  lisible       même question, plan redessiné pour un modèle (gros repères, contraste)
-  description   plan lisible + les faits de la carte en phrases
-  raisonnement  plan lisible + faits + une phrase de raisonnement avant la réponse
-  notes         on ne demande plus de choisir : chaque zone est notée de 0 à 10, on prend la meilleure
-
-Les numéros de zone sont MÉLANGÉS : dans le banc d'origine ils suivaient l'ordre d'utilité
-géométrique, donc répondre « 1 » valait la géométrie sans rien comprendre.
+"""Banc des variantes de question (étape 8) : une seule chose change à la fois (plan redessiné, faits
+en phrases, dossier JSON, exemples résolus, champs retirés...) pour comprendre pourquoi le modèle se
+trompe de zone. Mêmes cas que banc.py, mais numéros de zones MÉLANGÉS (avant, « 1 » valait la géométrie).
+    $PY experiments/12_guide/variantes.py --missions <dossiers de vol> --modele <dossier du modèle> --variantes epure --sortie resultats_x.json
+Variantes possibles : clés de VARIANTES (bas du fichier). Sortie par défaut : resultats_variantes.json.
 """
 from __future__ import annotations
 
@@ -27,14 +18,17 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+# racine du projet, pour importer swarm_qr
 sys.path.insert(0, str(HERE.parents[2]))
 
 from swarm_qr import mapping                                            # noqa: E402
 from swarm_qr.guide import Guide, decrit, boussole, dossier_zones, epure   # noqa: E402
 
+# ce dossier, pour importer banc
 sys.path.insert(0, str(HERE))
 from banc import instantanes, references                               # noqa: E402
 
+# début de question des variantes à deux images (caméra + plan) : explique les couleurs du plan
 CONTEXTE = (
     "You help a team of drones that must read QR codes glued on cardboard boxes in a warehouse. "
     "The first image is the side camera of one drone. The second image is the map built so far, "
@@ -42,37 +36,39 @@ CONTEXTE = (
     "free space, white has already been inspected, orange dots are boxes seen but not read yet. "
     "Numbered discs are the candidate zones the drone can fly to. "
 )
+# le but donné au modèle, commun à toutes les variantes
 BUT = ("The drone must fly to the zone where it will read the largest number of QR codes that are "
        "still unknown. ")
+# formats de réponse : le numéro seul, ou une phrase de raisonnement puis « ANSWER: n »
 FORMAT_NOMBRE = "Answer with the zone number only, nothing else."
 FORMAT_RAISON = ("First write one short sentence of reasoning, then a new line with "
                  "'ANSWER: <zone number>'.")
 
+# début de question quand seule la photo de caméra est jointe (zones décrites en texte)
 CONTEXTE_CAMERA = (
     "You help a team of drones that must read QR codes glued on cardboard boxes in a warehouse. "
     "The image is the side camera of one drone. The warehouse is divided into candidate zones the "
     "drone can fly to; you get their description in words below. "
 )
-VOTES = 5
-CIBLES_MAX = 25
-FRONTIERES_MAX = 20
-COULEUR_ZONE = (40, 40, 220)
-COULEUR_TEXTE = (255, 255, 255)
+VOTES = 5                        # réponses tirées par la variante « vote »
+CIBLES_MAX = 25                  # cibles du planificateur gardées au niveau « tout » (sur environ 512)
+FRONTIERES_MAX = 20              # exemples de cases de frontière gardés aux niveaux « listes » et « tout »
+COULEUR_ZONE = (40, 40, 220)     # rouge (ordre BGR d'OpenCV) des disques du plan redessiné
+COULEUR_TEXTE = (255, 255, 255)  # blanc des numéros
 
 
 # --------------------------------------------------------------------- le plan
 
 def _pixel(centre_xy, forme, echelle):
-    """Monde vers pixel, avec la convention de `mission.vue_annotee`."""
+    """Convertit une position du monde (m) en pixel (x, y) du plan, comme `mission.vue_annotee`."""
     i = int(np.floor((centre_xy[0] - mapping.MAP.x_min) / mapping.MAP.cell))
     j = int(np.floor((centre_xy[1] - mapping.MAP.y_min) / mapping.MAP.cell))
     return int((i + 0.5) * echelle), int((forme[1] - j - 0.5) * echelle)
 
 
 def plan_lisible(vue, zones, position=None, recadre: bool = True, retour_positions: bool = False):
-    """Le plan redessiné pour un modèle : disques pleins, gros chiffres blancs, recadrage sur la
-    zone utile. Le contrôle de comptage a montré que les cercles fins de 20 pixels avec un
-    chiffre de 8 pixels ne sont lus correctement qu'une fois sur trois."""
+    """Redessine le plan pour le modèle (disques pleins, gros chiffres blancs, recadrage, agrandi) ;
+    renvoie l'image, plus les pixels des repères si `retour_positions`."""
     img = vue.copy()
     forme = (mapping.MAP.shape[0], mapping.MAP.shape[1])
     echelle = img.shape[1] / forme[0]
@@ -114,7 +110,7 @@ def plan_lisible(vue, zones, position=None, recadre: bool = True, retour_positio
 
 
 def positions_plan_origine(vue, zones) -> dict:
-    """Les pixels des repères sur le plan tel qu'il est enregistré, sans redessin."""
+    """Renvoie les pixels des repères sur le plan tel qu'il est enregistré, par numéro de zone."""
     forme = (mapping.MAP.shape[0], mapping.MAP.shape[1])
     echelle = vue.shape[1] / forme[0]
     return {z["numero"]: _pixel(z["centre"], forme, echelle) for z in zones}
@@ -123,7 +119,8 @@ def positions_plan_origine(vue, zones) -> dict:
 # --------------------------------------------------------------- les variantes
 
 def melange(zones: list[dict], verite: dict, graine: int):
-    """Renumérote les zones au hasard : le numéro ne doit rien dire de leur qualité."""
+    """Renumérote les zones au hasard (graine fixe) pour que le numéro ne dise rien de leur qualité ;
+    renvoie (zones renumérotées, bonne zone, zone de la géométrie)."""
     numeros = [z["numero"] for z in zones]
     tire = numeros[:]
     random.Random(graine).shuffle(tire)
@@ -134,6 +131,7 @@ def melange(zones: list[dict], verite: dict, graine: int):
 
 
 def _reponse_zone(texte: str, zones: list[dict]) -> int | None:
+    """Lit le numéro de zone dans la réponse (« ANSWER: n » d'abord) ; None s'il n'est pas une zone."""
     m = re.search(r"ANSWER\s*[:=]?\s*(\d+)", texte, re.IGNORECASE)
     if m:
         n = int(m.group(1))
@@ -142,16 +140,20 @@ def _reponse_zone(texte: str, zones: list[dict]) -> int | None:
 
 
 def _note(texte: str) -> float | None:
+    """Renvoie le premier nombre écrit dans la réponse, ou None."""
     m = re.search(r"(\d+(?:\.\d+)?)", texte)
     return float(m.group(1)) if m else None
 
 
 def demande_choix(g: Guide, cam, vue, zones, question) -> tuple[int | None, str]:
+    """Pose la question avec la photo et le plan ; renvoie (zone lue, réponse brute)."""
     r = g.repond(cam, vue, question)
     return _reponse_zone(r, zones), r
 
 
 def variante_comptage(g, cas, cam, vue, zones, *_):
+    """Contrôle de perception : demande combien de disques montre le plan redessiné ; renvoie
+    (nombre lu, réponse brute)."""
     q = (CONTEXTE + "How many numbered discs are on the second image? " + FORMAT_NOMBRE)
     r = g.repond(cam, plan_lisible(vue, zones, cas.get("position")), q)
     n = _note(r)
@@ -159,6 +161,8 @@ def variante_comptage(g, cas, cam, vue, zones, *_):
 
 
 def variante_comptage_origine(g, cas, cam, vue, zones, *_):
+    """Même contrôle sur le plan d'origine (cercles fins de 20 px, chiffres de 8 px) ; renvoie
+    (nombre lu, réponse brute)."""
     q = (CONTEXTE + "How many numbered circles are on the second image? " + FORMAT_NOMBRE)
     r = g.repond(cam, vue, q)
     n = _note(r)
@@ -166,22 +170,26 @@ def variante_comptage_origine(g, cas, cam, vue, zones, *_):
 
 
 def variante_image(g, cas, cam, vue, zones, *_):
+    """Question d'origine avec les deux images seules (photo + plan enregistré) ; renvoie (zone, brut)."""
     q = CONTEXTE + BUT + "Which zone should the drone go to next? " + FORMAT_NOMBRE
     return demande_choix(g, cam, vue, zones, q)
 
 
 def variante_lisible(g, cas, cam, vue, zones, *_):
+    """Même question avec le plan redessiné à la place du plan d'origine ; renvoie (zone, brut)."""
     q = CONTEXTE + BUT + "Which zone should the drone go to next? " + FORMAT_NOMBRE
     return demande_choix(g, cam, plan_lisible(vue, zones, cas.get("position")), zones, q)
 
 
 def variante_description(g, cas, cam, vue, zones, *_):
+    """Plan redessiné + les faits de la carte en phrases (quelques chiffres par zone) ; renvoie (zone, brut)."""
     faits = decrit(zones, cas.get("position"), cas.get("codes_lus"))
     q = CONTEXTE + BUT + faits + "Which zone should the drone go to next? " + FORMAT_NOMBRE
     return demande_choix(g, cam, plan_lisible(vue, zones, cas.get("position")), zones, q)
 
 
 def variante_raisonnement(g, cas, cam, vue, zones, *_):
+    """Plan redessiné + faits + une phrase de raisonnement demandée avant « ANSWER: n » ; renvoie (zone, brut)."""
     faits = decrit(zones, cas.get("position"), cas.get("codes_lus"))
     q = (CONTEXTE + BUT + faits
          + "A zone is good when it holds many boxes whose code is still unknown, and when it is "
@@ -190,7 +198,8 @@ def variante_raisonnement(g, cas, cam, vue, zones, *_):
 
 
 def variante_notes(g, cas, cam, vue, zones, *_):
-    """Juger vaut mieux que choisir : une zone à la fois, une note de 0 à 10."""
+    """Fait noter chaque zone de 0 à 10 (une question par zone) au lieu de choisir ; renvoie la zone
+    la mieux notée et les réponses brutes."""
     plan = plan_lisible(vue, zones, cas.get("position"))
     faits = decrit(zones, cas.get("position"), cas.get("codes_lus"))
     notes, brut = {}, []
@@ -207,16 +216,17 @@ def variante_notes(g, cas, cam, vue, zones, *_):
     return meilleure, " ".join(brut)
 
 
-EXEMPLES = []          # rempli par main() : des cas resolus, jamais ceux qu'on evalue
+EXEMPLES = []          # rempli par main() : 2 cas résolus pris en fin de liste, jamais évalués
 
+# phrase de métier de la variante « texte_seul_indice »
 INDICE = ("Useful knowledge: a QR code already spotted but not read is almost a guaranteed "
           "reading, because the detector has already seen it and the drone only has to come "
           "closer. A shelf section never looked at is only a hope: there may be a box, or not. ")
 
 
 def dossier(cas, zones, avec_note: bool, niveau: str = "zones") -> dict:
-    """Le dossier des zones vient de guide.py (le même qu'en vol) ; les niveaux « listes » et
-    « tout » ajoutent les listes brutes du vol « dossier complet »."""
+    """Construit le dossier JSON donné au modèle : « zones » = celui de guide.py (le même qu'en vol) ;
+    « listes » et « tout » ajoutent les listes brutes enregistrées par le vol dossier_complet."""
     moi = cas.get("position") or [0.0, 0.0, 0.0]
     autres = [d for d in cas.get("coequipiers", []) if d["i"] != cas.get("drone")]
     out = dossier_zones(cas, zones, avec_note)
@@ -251,7 +261,7 @@ def dossier(cas, zones, avec_note: bool, niveau: str = "zones") -> dict:
 
 
 def en_phrases(dos: dict) -> str:
-    """Le même dossier, mais tout en phrases : chaque nombre écrit dans une phrase complète."""
+    """Réécrit le même dossier en phrases anglaises complètes (chaque nombre dans une phrase) ; renvoie le texte."""
     m = dos["this_drone"]
     lignes = [f"It is {dos['mission_time_s']} seconds into the mission and {dos['qr_codes_read_so_far']} "
               f"QR codes have been read so far.",
@@ -286,6 +296,8 @@ def en_phrases(dos: dict) -> str:
 
 def _dossier_complet(g, cas, cam, zones, forme: str, avec_note: bool, avec_image: bool,
                      niveau: str = "zones"):
+    """Pose la question avec le dossier (JSON ou phrases), avec ou sans la photo, jamais le plan ;
+    renvoie (zone, réponse brute)."""
     dos = dossier(cas, zones, avec_note, niveau)
     corps = en_phrases(dos) if forme == "phrases" else ("Here is the map data as JSON:\n"
                                                        + json.dumps(dos, indent=1) + "\n")
@@ -300,10 +312,13 @@ def _dossier_complet(g, cas, cam, zones, forme: str, avec_note: bool, avec_image
 
 
 def _zones_reordonnees(dos: dict, epurer: bool) -> dict:
+    """Met le champ décisif (codes repérés non lus) en tête de chaque zone et, si `epurer`, retire
+    les 4 champs distracteurs (total de cibles, genres, rayon, frontières)."""
     return epure(dos, distracteurs=epurer)
 
 
 def variante_ordre(g, cas, cam, vue, zones, *_):
+    """Photo + dossier JSON avec le champ décisif en tête de chaque zone, rien de retiré ; renvoie (zone, brut)."""
     dos = _zones_reordonnees(dossier(cas, zones, False), epurer=False)
     q = (CONTEXTE_CAMERA + BUT + "Here is the map data as JSON:\n" + json.dumps(dos, indent=1)
          + "\nWhich zone should the drone go to next? 'ANSWER: <zone number>' then 'WHY: <one sentence>'.")
@@ -312,6 +327,7 @@ def variante_ordre(g, cas, cam, vue, zones, *_):
 
 
 def variante_epure(g, cas, cam, vue, zones, *_):
+    """Photo + dossier « épuré » : champ décisif en tête, 4 distracteurs retirés ; renvoie (zone, brut)."""
     dos = _zones_reordonnees(dossier(cas, zones, False), epurer=True)
     q = (CONTEXTE_CAMERA + BUT + "Here is the map data as JSON:\n" + json.dumps(dos, indent=1)
          + "\nWhich zone should the drone go to next? 'ANSWER: <zone number>' then 'WHY: <one sentence>'.")
@@ -320,7 +336,7 @@ def variante_epure(g, cas, cam, vue, zones, *_):
 
 
 def variante_epure_few_shot(g, cas, cam, vue, zones, *_):
-    """Le dossier épuré, précédé de deux cas résolus présentés de la même façon."""
+    """Dossier épuré précédé de deux cas résolus présentés de la même façon ; renvoie (zone, brut)."""
     images, texte = [], CONTEXTE_CAMERA + BUT + "Here are two solved examples.\n"
     for k, ex in enumerate(EXEMPLES, 1):
         images.append(ex["cam"])
@@ -336,10 +352,12 @@ def variante_epure_few_shot(g, cas, cam, vue, zones, *_):
 
 # ---------------------------------------- la règle donnée indirectement, et des noms parlants
 
+# deux phrases de métier : la règle donnée indirectement (variantes epure_metier)
 METIER = ("Useful knowledge from the field: a QR code already spotted by the detector but not read "
           "yet is an almost guaranteed reading, the drone only has to come closer. A shelf section "
           "where a box was seen but never looked at from the right side is only a possibility. "
           "Every metre flown costs time. ")
+# noms de champs « porteurs de sens » essayés par les variantes epure_noms
 NOMS_PARLANTS = {
     "qr_codes_spotted_but_not_read": "almost_certain_readings_if_the_drone_goes_there",
     "shelf_sections_with_a_box_seen_but_face_never_looked_at": "possible_boxes_not_yet_verified",
@@ -349,11 +367,14 @@ NOMS_PARLANTS = {
 
 
 def _renomme(dos: dict) -> dict:
+    """Renvoie le dossier avec les champs des zones renommés selon NOMS_PARLANTS."""
     zones = [{NOMS_PARLANTS.get(k, k): v for k, v in z.items()} for z in dos["candidate_zones"]]
     return {**dos, "candidate_zones": zones}
 
 
 def _epure_variante(g, cas, cam, zones, metier: bool, noms: bool):
+    """Pose la question avec photo + dossier épuré, plus les phrases de métier (`metier`) et/ou les
+    noms parlants (`noms`) ; renvoie (zone, réponse brute)."""
     dos = _zones_reordonnees(dossier(cas, zones, False), epurer=True)
     if noms:
         dos = _renomme(dos)
@@ -365,20 +386,23 @@ def _epure_variante(g, cas, cam, zones, metier: bool, noms: bool):
 
 
 def variante_epure_metier(g, cas, cam, vue, zones, *_):
+    """Dossier épuré + deux phrases de métier avant les données ; renvoie (zone, brut)."""
     return _epure_variante(g, cas, cam, zones, metier=True, noms=False)
 
 
 def variante_epure_noms(g, cas, cam, vue, zones, *_):
+    """Dossier épuré avec des noms de champs parlants ; renvoie (zone, brut)."""
     return _epure_variante(g, cas, cam, zones, metier=False, noms=True)
 
 
 def variante_epure_noms_metier(g, cas, cam, vue, zones, *_):
+    """Dossier épuré avec à la fois les phrases de métier et les noms parlants ; renvoie (zone, brut)."""
     return _epure_variante(g, cas, cam, zones, metier=True, noms=True)
 
 
 def variante_extraire(g, cas, cam, vue, zones, *_):
-    """Deux étapes dans la même réponse : recopier les chiffres clés de chaque zone dans un petit
-    tableau, puis décider. Vise la faiblesse mesurée — il lit mal les nombres dans un long texte."""
+    """Fait d'abord recopier les chiffres clés de chaque zone dans un petit tableau, puis décider
+    (pour tester la lecture des nombres) ; renvoie (zone, réponse brute)."""
     dos = dossier(cas, zones, False)
     q = (CONTEXTE_CAMERA + BUT + "Here is the map data as JSON:\n" + json.dumps(dos, indent=1)
          + "\nFirst, for EACH zone, write one line 'zone N: spotted-unread=S, box-sections=B, "
@@ -389,7 +413,7 @@ def variante_extraire(g, cas, cam, vue, zones, *_):
 
 
 def variante_question_avant(g, cas, cam, vue, zones, *_):
-    """La question et le but d'abord, les données ensuite, un rappel court à la fin."""
+    """Pose la question avant les données JSON, avec un court rappel à la fin ; renvoie (zone, brut)."""
     dos = dossier(cas, zones, False)
     q = (CONTEXTE_CAMERA + BUT + "QUESTION: which zone should the drone go to next, to read the "
          "largest number of QR codes still unknown? The data follows.\n" + json.dumps(dos, indent=1)
@@ -399,7 +423,7 @@ def variante_question_avant(g, cas, cam, vue, zones, *_):
 
 
 def variante_vote(g, cas, cam, vue, zones, *_):
-    """Cinq réponses tirées avec un peu de hasard, la majorité l'emporte."""
+    """Tire 5 réponses avec un peu de hasard (température 0,7) ; renvoie la zone majoritaire et les votes."""
     dos = dossier(cas, zones, False)
     q = (CONTEXTE_CAMERA + BUT + "Here is the map data as JSON:\n" + json.dumps(dos, indent=1)
          + "\nWhich zone should the drone go to next? 'ANSWER: <zone number>' then 'WHY: <one sentence>'.")
@@ -414,57 +438,63 @@ def variante_vote(g, cas, cam, vue, zones, *_):
 
 
 def variante_dossier_phrases(g, cas, cam, vue, zones, *_):
+    """Photo + dossier complet écrit en phrases ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "phrases", avec_note=False, avec_image=True)
 
 
 def variante_dossier_json(g, cas, cam, vue, zones, *_):
+    """Photo + dossier complet en JSON ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=False, avec_image=True)
 
 
 def variante_dossier_json_note(g, cas, cam, vue, zones, *_):
+    """Photo + dossier complet en JSON, avec la note géométrique de chaque zone ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=True, avec_image=True)
 
 
 def variante_dossier_sans_image(g, cas, cam, vue, zones, *_):
+    """Dossier complet en JSON, sans aucune image ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=False, avec_image=False)
 
 
 def variante_listes(g, cas, cam, vue, zones, *_):
-    """Niveau 2 : les zones, plus les listes brutes — codes lus et leurs positions, codes
-    repérés non lus, cibles en cours des drones, frontières, réservations, résumé de la grille."""
+    """Niveau « listes » : photo + zones + listes brutes (codes lus, codes repérés non lus, cibles
+    des drones, frontières, réservations, résumé de la grille) ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=False, avec_image=True, niveau="listes")
 
 
 def variante_tout(g, cas, cam, vue, zones, *_):
-    """Niveau 3 : tout, y compris les centaines de cibles candidates du planificateur."""
+    """Niveau « tout » : les listes plus les 25 cibles les plus utiles du planificateur (sur environ
+    512), photo jointe ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=False, avec_image=True, niveau="tout")
 
 
 def variante_listes_sans_image(g, cas, cam, vue, zones, *_):
+    """Niveau « listes », sans la photo de caméra ; renvoie (zone, brut)."""
     return _dossier_complet(g, cas, cam, zones, "json", avec_note=False, avec_image=False, niveau="listes")
 
 
 def variante_texte_seul(g, cas, cam, vue, zones, *_):
+    """Photo seule + faits enrichis en texte ; renvoie (zone, brut)."""
     return _texte_seul(g, cas, cam, zones, indice=False)
 
 
 def variante_texte_melange(g, cas, cam, vue, zones, *_):
-    """Meme question, mais les zones sont enumerees dans un ordre tire au hasard au lieu de
-    1 a 6 : le modele n'a jamais repondu 1 sur 102 cas alors que 1 etait juste 15 fois. Si le
-    refus du premier element est un biais de position, il doit disparaitre ici."""
+    """Comme texte_seul, zones énumérées dans un ordre au hasard pour tester le biais de position
+    (jamais « 1 » sur 102 cas, alors que 1 était juste 15 fois) ; renvoie (zone, brut)."""
     ordre = list(zones)
     random.Random(hash((cas["mission"], cas["k"], cas.get("drone"))) & 0xffff).shuffle(ordre)
     return _texte_seul(g, cas, cam, ordre, indice=False, trier=False)
 
 
 def variante_texte_seul_indice(g, cas, cam, vue, zones, *_):
+    """Comme texte_seul, plus la phrase de métier INDICE ; renvoie (zone, brut)."""
     return _texte_seul(g, cas, cam, zones, indice=True)
 
 
 def variante_few_shot(g, cas, cam, vue, zones, *_):
-    """Deux cas deja resolus montres avant la vraie question. Le modele ne s'entraine pas, il
-    lit des exemples dans la question meme : c'est le test de faisabilite avant tout
-    apprentissage. Si cela n'aide pas, un soft prompt ou LoRA n'aideront pas davantage."""
+    """Montre deux cas déjà résolus (photo, plan, faits, bonne réponse) avant la vraie question :
+    test avant tout apprentissage (prompt appris, LoRA) ; renvoie (zone, brut)."""
     images, texte = [], CONTEXTE + BUT + "Here are two solved examples.\n"
     for k, ex in enumerate(EXEMPLES, 1):
         images += [ex["cam"], ex["plan"]]
@@ -479,6 +509,7 @@ def variante_few_shot(g, cas, cam, vue, zones, *_):
     return _reponse_zone(r, zones), r
 
 
+# nom donné à --variantes -> fonction qui pose la question
 VARIANTES = {
     "comptage_origine": variante_comptage_origine,
     "comptage": variante_comptage,
@@ -508,10 +539,12 @@ VARIANTES = {
     "epure_noms": variante_epure_noms,
     "epure_noms_metier": variante_epure_noms_metier,
 }
-PERCEPTION = {"comptage", "comptage_origine"}
+PERCEPTION = {"comptage", "comptage_origine"}   # contrôles : la bonne réponse est le nombre de zones
 
 
 def juge(nom_variante: str, g: Guide, cas: list[dict]) -> dict:
+    """Applique une variante à tous les cas (numéros mélangés) ; renvoie le taux de bonne zone,
+    l'accord avec la géométrie, le temps médian et le détail des réponses."""
     fonction = VARIANTES[nom_variante]
     justes = repondus = 0
     comme_geometrie = 0
@@ -539,6 +572,8 @@ def juge(nom_variante: str, g: Guide, cas: list[dict]) -> dict:
 
 
 def main() -> None:
+    """Met de côté 2 exemples résolus si une variante en demande, charge le modèle, juge chaque
+    variante et réécrit le fichier de résultats après chacune."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--missions", nargs="+", required=True)
     ap.add_argument("--modele", required=True)

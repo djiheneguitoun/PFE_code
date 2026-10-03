@@ -1,7 +1,8 @@
-"""L'ARÈNE RL d'inspection d'inventaire QR (Isaac Sim 5.1 / Isaac Lab 2.3).
+"""Arène d'apprentissage par renforcement pour l'inventaire QR (Isaac Sim 5.1 / Isaac Lab 2.3) : entrepôt, drones, LiDAR, lecture des QR.
 
-Un entrepôt + un drone piloté en vitesse + un LiDAR + la lecture des QR posés sur
-les cartons. Même monde pour les 3 cerveaux (Pore / PPO / Dreamer).
+QRInventoryEnv : 1 drone, sans récompense (sert aux tests T1.x) ; SwarmQREnv : 3 drones, la tâche entraînée par train_ppo.py.
+Les drones (Crazyflie) sont pilotés en vitesse ; un QR est « lu » selon une règle géométrique (distance, angle, vitesse).
+Chargé par gym.make après le démarrage d'Isaac Sim (voir __init__.py) ; même monde pour les 3 cerveaux (Pore / PPO / Dreamer).
 """
 
 import math
@@ -26,8 +27,8 @@ from . import actuator
 from .config_rl import CFG
 from .qr_task import FACES, carton_qr_world_poses, find_cartons
 
-WAREHOUSE_USD = os.getenv("AIF_FACTORY_USD", CFG.scene.warehouse_usd)
-MAX_DIST = CFG.lidar.max_distance_m
+WAREHOUSE_USD = os.getenv("AIF_FACTORY_USD", CFG.scene.warehouse_usd)  # fichier USD de l'entrepôt (variable d'environnement, sinon config_rl)
+MAX_DIST = CFG.lidar.max_distance_m  # m : portée du LiDAR (8 m)
 
 
 @configclass
@@ -37,7 +38,7 @@ class QRInventoryEnvCfg(DirectRLEnvCfg):
     decimation = CFG.train.decimation
     episode_length_s = CFG.train.episode_length_s
     action_space = CFG.action.dim
-    observation_space = CFG.lidar.num_rays + 14  # LiDAR + état(13) + mémoire QR(1)
+    observation_space = CFG.lidar.num_rays + 14  # LiDAR (1800) + état (13) + mémoire QR (1) = 1814
     state_space = 0
 
     sim: SimulationCfg = SimulationCfg(dt=CFG.train.physics_dt, render_interval=decimation)
@@ -70,16 +71,16 @@ class QRInventoryEnvCfg(DirectRLEnvCfg):
     max_yaw_rate: float = CFG.action.max_yaw_rate_rps
     alt_min: float = CFG.action.altitude_min_m
     alt_max: float = CFG.action.altitude_max_m
-    start_altitude: float = 1.0
+    start_altitude: float = 1.0  # m : altitude de départ
 
 
 class QRInventoryEnv(DirectRLEnv):
-    """L'environnement RL : construit le monde, applique les actions, renvoie obs / récompense / fin."""
+    """Environnement à 1 drone : construit le monde, applique l'action, renvoie observation / récompense (nulle) / fin."""
 
     cfg: QRInventoryEnvCfg
 
     def __init__(self, cfg: QRInventoryEnvCfg, render_mode: str | None = None, **kwargs):
-        """Prépare les tampons internes (dernière action, suivi des QR lus)."""
+        """Prépare les tampons internes (dernière action, suivi des QR lus) ; les QR sont repérés au 1er pas."""
         super().__init__(cfg, render_mode, **kwargs)
         self._actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self._qr_ready = False
@@ -87,8 +88,8 @@ class QRInventoryEnv(DirectRLEnv):
         self._read_frac = torch.zeros(self.num_envs, device=self.device)
 
     def _setup_scene(self):
-        """Construit le monde UNE fois : coupe la gravité du drone, crée le drone + le LiDAR,
-        charge l'entrepôt + le sol + la lumière, puis duplique la scène sur tous les environnements."""
+        """Construit le monde une fois : drone sans gravité (altitude imposée) + LiDAR, entrepôt, sol, lumière,
+        puis copie la scène dans tous les environnements parallèles."""
         spawn = self.cfg.robot.spawn
         if spawn is not None:
             spawn.rigid_props = spawn.rigid_props or sim_utils.RigidBodyPropertiesCfg()
@@ -108,8 +109,8 @@ class QRInventoryEnv(DirectRLEnv):
         self.scene.sensors["lidar"] = self._lidar
 
     def _ensure_qr(self):
-        """Au 1er pas (quand la géométrie est chargée) : lit la position/orientation de chaque QR
-        et prépare le suivi (quels QR sont lus, depuis combien de pas)."""
+        """Repère au 1er pas (géométrie chargée) la position et la normale des QR de l'entrepôt n° 0,
+        et crée le suivi : QR lus, et depuis combien de pas chacun est visé."""
         stage = omni.usd.get_context().get_stage()
         cartons = [p for p in find_cartons(stage) if "/env_0/" in p.GetPath().pathString]
         pos, norm = carton_qr_world_poses(stage, cartons)
@@ -121,7 +122,7 @@ class QRInventoryEnv(DirectRLEnv):
         self._qr_ready = True
 
     def _lidar_ranges(self) -> torch.Tensor:
-        """Distances du LiDAR (360×5) ramenées entre 0 et 1, avec bruit capteur optionnel."""
+        """Renvoie les 1800 distances du LiDAR divisées par la portée (entre 0 et 1), avec bruit optionnel."""
         hits = self._lidar.data.ray_hits_w
         pos = self._lidar.data.pos_w.unsqueeze(1)
         dist = torch.norm(hits - pos, dim=-1)
@@ -134,8 +135,8 @@ class QRInventoryEnv(DirectRLEnv):
         return dist.clamp(0.0, MAX_DIST) / MAX_DIST
 
     def _update_qr(self):
-        """À chaque pas : décide quels QR sont « lus » (proche + dans le champ de vue + de face
-        + drone lent + visé assez longtemps) et met à jour la mémoire QR (fraction lue)."""
+        """Décide à chaque pas quels QR deviennent « lus » (≤ 3 m, dans le champ, de face, drone lent,
+        2 pas de suite) et met à jour la fraction de QR lus."""
         if not self._qr_ready:
             self._ensure_qr()
         d = self._robot.data
@@ -149,6 +150,7 @@ class QRInventoryEnv(DirectRLEnv):
         in_fov = (direction * fwd.unsqueeze(1)).sum(-1) >= math.cos(math.radians(CFG.qr.camera_fov_deg))
         facing = (-direction * self._qr_normal.unsqueeze(0)).sum(-1) >= math.cos(math.radians(CFG.qr.max_view_angle_deg))
         close = dist <= CFG.qr.max_read_distance_m
+        # un carton compte comme visible si l'une de ses 2 faces à QR l'est
         visible = (close & in_fov & facing).view(self.num_envs, self._n_cartons, len(FACES)).any(-1)
 
         lin = torch.norm(d.root_lin_vel_w[:, :2], dim=-1)
@@ -163,11 +165,12 @@ class QRInventoryEnv(DirectRLEnv):
         self._read_frac = self._read.float().mean(dim=1)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        """Reçoit l'action du cerveau (vx, vy, vz, yaw_rate) et la borne entre -1 et 1."""
+        """Mémorise l'action de la politique (vx, vy, vz, vitesse de lacet), bornée entre -1 et 1."""
         self._actions = actions.clone().clamp(-1.0, 1.0)
 
     def _apply_action(self) -> None:
-        """Convertit l'action en vitesse réelle et l'applique au drone (repère monde, altitude bornée)."""
+        """Convertit l'action en vitesse (m/s, repère monde) et l'impose directement au drone ;
+        vz est mis à zéro aux butées d'altitude."""
         a = self._actions
         vx_b = a[:, 0] * self.cfg.max_lin_vel
         vy_b = a[:, 1] * self.cfg.max_lin_vel
@@ -189,7 +192,7 @@ class QRInventoryEnv(DirectRLEnv):
         self._robot.write_root_velocity_to_sim(vel)
 
     def _get_observations(self) -> dict:
-        """Ce que le drone perçoit (envoyé au cerveau) : LiDAR + son état + mémoire QR."""
+        """Renvoie l'observation : LiDAR (1800) + état du drone (position, orientation, vitesses : 13) + fraction de QR lus (1)."""
         d = self._robot.data
         state = torch.cat(
             [d.root_pos_w - self.scene.env_origins, d.root_quat_w, d.root_lin_vel_b, d.root_ang_vel_b], dim=-1
@@ -197,18 +200,18 @@ class QRInventoryEnv(DirectRLEnv):
         return {"policy": torch.cat([self._lidar_ranges(), state, self._read_frac.unsqueeze(-1)], dim=-1)}
 
     def _get_rewards(self) -> torch.Tensor:
-        """Récompense du pas (pour l'instant 0 — sera remplie en T1.6)."""
+        """Renvoie toujours 0 (récompense notée « à remplir en T1.6 » ; seule SwarmQREnv a une récompense)."""
         return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Met à jour la lecture des QR puis dit si l'épisode est fini (terminé / tronqué par timeout)."""
+        """Met à jour la lecture des QR, puis renvoie (terminé, tronqué) : jamais terminé, tronqué à la fin du temps (45 s)."""
         self._update_qr()
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         return terminated, time_out
 
     def _reset_idx(self, env_ids):
-        """Réinitialise les environnements finis : replace le drone au départ, efface la mémoire QR."""
+        """Replace le drone au départ (1 m d'altitude) dans les environnements finis et efface leurs QR lus."""
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
         super()._reset_idx(env_ids)
@@ -224,19 +227,20 @@ class QRInventoryEnv(DirectRLEnv):
 
 
 # =====================================================================================
-# Essaim multi-drone (3 drones / entrepôt) — politique partagée décentralisée (IPPO).
+# Essaim multi-drone (3 drones / entrepôt) — politique partagée décentralisée (IPPO :
+# chaque drone décide seul à partir de ce qu'il perçoit, avec le même réseau pour tous).
 # =====================================================================================
 
-NUM_DRONES = CFG.train.num_drones
-AGENTS = [f"drone_{k}" for k in range(NUM_DRONES)]
-OBS_DIM = CFG.lidar.num_rays + 13 + (NUM_DRONES - 1) * 3 + 1
-STATE_DIM = NUM_DRONES * 13 + NUM_DRONES * CFG.lidar.num_rays + 1
-_FAR = 1.0e6  # distance « infinie » des QR déjà lus (récompense d'approche)
+NUM_DRONES = CFG.train.num_drones  # 3 drones par entrepôt
+AGENTS = [f"drone_{k}" for k in range(NUM_DRONES)]  # noms des agents : drone_0, drone_1, drone_2
+OBS_DIM = CFG.lidar.num_rays + 13 + (NUM_DRONES - 1) * 3 + 1  # 1800 + 13 + 6 (2 voisins) + 1 = 1820 par drone
+STATE_DIM = NUM_DRONES * 13 + NUM_DRONES * CFG.lidar.num_rays + 1  # 39 + 5400 + 1 = 5440 (état global pour MAPPO)
+_FAR = 1.0e6  # m : distance « infinie » donnée aux QR déjà lus (récompense d'approche)
 
 
 @configclass
 class SwarmQREnvCfg(DirectMARLEnvCfg):
-    """Réglages de l'essaim : 3 drones par entrepôt, obs/action par drone, état global pour MAPPO."""
+    """Réglages de l'essaim : 3 drones par entrepôt, observation et action par drone, état global pour MAPPO, modèle d'actionneur."""
 
     decimation = CFG.train.decimation
     episode_length_s = CFG.train.episode_length_s
@@ -278,7 +282,7 @@ class SwarmQREnvCfg(DirectMARLEnvCfg):
     max_yaw_rate: float = CFG.action.max_yaw_rate_rps
     alt_min: float = CFG.action.altitude_min_m
     alt_max: float = CFG.action.altitude_max_m
-    start_altitude: float = 1.0
+    start_altitude: float = 1.0  # m : altitude de départ
     max_vz_up: float = CFG.action.max_vz_up_mps
     max_vz_down: float = CFG.action.max_vz_down_mps
     accel_xy: float = CFG.action.accel_xy_mps2
@@ -290,12 +294,12 @@ class SwarmQREnvCfg(DirectMARLEnvCfg):
 
 
 class SwarmQREnv(DirectMARLEnv):
-    """3 drones dans le même entrepôt : chacun voit son LiDAR + ses voisins + la couverture QR partagée."""
+    """Essaim de 3 drones dans le même entrepôt : chacun voit son LiDAR, ses voisins et la fraction de QR lus par l'équipe."""
 
     cfg: SwarmQREnvCfg
 
     def __init__(self, cfg: SwarmQREnvCfg, render_mode: str | None = None, **kwargs):
-        """Prépare les tampons par drone (actions, à-coups, collisions, lecture QR partagée)."""
+        """Prépare les tampons par drone (actions, à-coups, collisions, lecture QR partagée, vitesse de l'actionneur)."""
         super().__init__(cfg, render_mode, **kwargs)
         self._actions = {a: torch.zeros(self.num_envs, CFG.action.dim, device=self.device) for a in AGENTS}
         self._prev_actions = {a: torch.zeros(self.num_envs, CFG.action.dim, device=self.device) for a in AGENTS}
@@ -321,7 +325,7 @@ class SwarmQREnv(DirectMARLEnv):
         self._wh_mesh = None
 
     def _setup_scene(self):
-        """Crée les 3 drones (gravité coupée) + leurs 3 LiDAR, charge l'entrepôt, puis clone le tout par env."""
+        """Crée les 3 drones (gravité coupée) et leurs 3 LiDAR, charge l'entrepôt, puis copie le tout dans chaque environnement."""
         self._drones, self._lidars = [], []
         for k in range(NUM_DRONES):
             d_cfg = self.cfg.robot.replace(prim_path=f"/World/envs/env_.*/Drone_{k}")
@@ -344,7 +348,7 @@ class SwarmQREnv(DirectMARLEnv):
         self.scene.clone_environments(copy_from_source=False)
 
     def _ensure_qr(self):
-        """Au 1er pas : lit la pose de chaque QR et prépare le suivi PARTAGÉ (1 set de lecture par entrepôt)."""
+        """Repère au 1er pas la position et la normale de chaque QR, et crée le suivi PARTAGÉ (une liste de QR lus par entrepôt)."""
         stage = omni.usd.get_context().get_stage()
         cartons = [p for p in find_cartons(stage) if "/env_0/" in p.GetPath().pathString]
         pos, norm = carton_qr_world_poses(stage, cartons)
@@ -356,7 +360,7 @@ class SwarmQREnv(DirectMARLEnv):
         self._qr_ready = True
 
     def _lidar_ranges(self, lidar):
-        """Distances LiDAR (0–1) d'un drone + la distance brute mini (pour la collision)."""
+        """Renvoie les distances (0 à 1) lues sur un capteur LiDAR Isaac et la distance minimale brute (m)."""
         hits = lidar.data.ray_hits_w
         pos = lidar.data.pos_w.unsqueeze(1)
         dist = torch.norm(hits - pos, dim=-1)
@@ -370,7 +374,8 @@ class SwarmQREnv(DirectMARLEnv):
         return dist.clamp(0.0, MAX_DIST) / MAX_DIST, raw_min
 
     def _update_qr(self):
-        """Couverture PARTAGÉE : un tag est lu si N'IMPORTE lequel des 3 drones le vise bien (et lentement)."""
+        """Met à jour la lecture PARTAGÉE : un QR est lu si l'un des 3 drones le voit bien et lentement ;
+        calcule aussi, par drone, la posture, les QR crédités et les mètres gagnés vers le QR non lu le plus proche."""
         if not self._qr_ready:
             self._ensure_qr()
         qr_pos = self._qr_pos_local.unsqueeze(0) + self.scene.env_origins.unsqueeze(1)
@@ -418,12 +423,14 @@ class SwarmQREnv(DirectMARLEnv):
             self._nearest_unread[k] = nearest
 
     def _raycast_static(self, k):
-        """LiDAR maison : raycast STATIQUE sur le mesh entrepôt partagé (1 BVH, sans refit) + correction d'origine."""
+        """Lance les 1800 rayons du drone k sur le maillage fixe partagé de l'entrepôt (sans mise à jour du maillage) ;
+        renvoie les distances (0 à 1) et la distance minimale brute (m)."""
         if self._wh_mesh is None:
             self._wh_mesh = next(iter(MultiMeshRayCaster.meshes.values()))
         origins = self.scene.env_origins
         r = self._ray_dirs.shape[0]
         base = (self._drones[k].data.root_pos_w + self._ray_off).unsqueeze(1)  # (N,1,3)
+        # un seul maillage, celui de l'entrepôt n° 0 : chaque drone y est ramené par décalage d'origine
         starts = (base - origins.unsqueeze(1) + origins[0]).expand(self.num_envs, r, 3).contiguous()
         dirs = self._ray_dirs.unsqueeze(0).expand(self.num_envs, r, 3).contiguous()
         hits = raycast_mesh(starts, dirs, max_dist=MAX_DIST, mesh=self._wh_mesh)[0]
@@ -438,7 +445,7 @@ class SwarmQREnv(DirectMARLEnv):
         return dist.clamp(0.0, MAX_DIST) / MAX_DIST, raw_min
 
     def _refresh(self):
-        """Calcule une fois par pas : LiDAR + état de chaque drone, collisions, et (en pas) la lecture QR."""
+        """Calcule une seule fois par pas le LiDAR, l'état et les collisions de chaque drone, et la lecture des QR (pendant un pas)."""
         if self._refreshed:
             return
         self._lidar_cache, self._state_cache = [], []
@@ -457,7 +464,7 @@ class SwarmQREnv(DirectMARLEnv):
         self._refreshed = True
 
     def _pre_physics_step(self, actions: dict) -> None:
-        """Reçoit les actions des 3 drones, calcule les à-coups, et marque qu'on est en plein pas."""
+        """Mémorise les actions des 3 drones (bornées à ±1), calcule leurs à-coups ‖Δaction‖² et marque le début d'un pas."""
         self._stepping = True
         self._refreshed = False
         for a in AGENTS:
@@ -467,19 +474,13 @@ class SwarmQREnv(DirectMARLEnv):
             self._actions[a] = act
 
     def _apply_action(self) -> None:
-        """Un pas d'actionneur pour chacun des 3 drones (appelé à chaque sous-pas physique)."""
+        """Applique un pas d'actionneur à chacun des 3 drones (appelé à chaque pas physique, 4 fois par pas de contrôle)."""
         for k in range(NUM_DRONES):
             self._drive(k)
 
     def _drive(self, k: int) -> None:
-        """L'action fixe la vitesse VISÉE ; la vitesse réelle la rejoint avec un retard du
-        premier ordre et une accélération bornée (rl_inventory/actuator.py).
-
-        Le filtre vit dans le repère MONDE : c'est là que vit la quantité de mouvement. Un
-        filtre en repère corps ferait tourner la vitesse avec le nez du drone (accélération
-        centripète gratuite, inversion de vitesse par simple pivot). La consigne, elle, est
-        tournée du corps vers le monde à chaque sous-pas.
-        """
+        """Fait rejoindre au drone k sa vitesse visée avec retard et accélération bornée (actuator.py), puis l'impose au simulateur.
+        Filtre en repère monde (en repère drone, la vitesse tournerait avec le nez) ; la consigne est tournée du drone vers le monde."""
         robot, a, cfg = self._drones[k], self._actions[f"drone_{k}"], self.cfg
         _, _, yaw = euler_xyz_from_quat(robot.data.root_quat_w)
         cy, sy = torch.cos(yaw), torch.sin(yaw)
@@ -512,7 +513,7 @@ class SwarmQREnv(DirectMARLEnv):
         robot.write_root_velocity_to_sim(vel)
 
     def _get_observations(self) -> dict:
-        """Obs LOCALE par drone : son LiDAR + son état + positions relatives des voisins + couverture partagée."""
+        """Renvoie l'observation locale de chaque drone : LiDAR (1800) + état (13) + positions relatives des 2 voisins (6) + fraction lue (1)."""
         self._refresh()
         shared = self._read_frac.unsqueeze(-1)
         obs = {}
@@ -525,12 +526,12 @@ class SwarmQREnv(DirectMARLEnv):
         return obs
 
     def _get_states(self) -> torch.Tensor:
-        """État GLOBAL (tous les drones + couverture) pour le critique central — prêt pour MAPPO."""
+        """Renvoie l'état global (3 états + 3 LiDAR + fraction lue = 5440 valeurs) pour le critique central de MAPPO."""
         self._refresh()
         return torch.cat(self._state_cache + self._lidar_cache + [self._read_frac.unsqueeze(-1)], dim=-1)
 
     def _get_rewards(self) -> dict:
-        """Récompense par drone : +ses QR +approche dense +(mission/temps partagés) −collision/pas −à-coups."""
+        """Renvoie la récompense de chaque drone : ses QR lus (+10), posture, approche, mission (+100), temps, collision, à-coups."""
         self._refresh()
         mission = (self._read_frac >= CFG.qr.coverage_target).float() * CFG.reward.mission_complete
         out = {}
@@ -545,8 +546,8 @@ class SwarmQREnv(DirectMARLEnv):
         return out
 
     def _get_dones(self) -> tuple[dict, dict]:
-        """Fin : mission complète = terminé ; timeout = tronqué. (Collision = pénalité/pas, PAS une fin :
-        un env ne reset que si TOUS les drones sont finis, cf. direct_marl_env reset_buf = prod(dones).)"""
+        """Renvoie (terminé, tronqué) par drone : terminé quand tous les QR sont lus, tronqué à la fin du temps (45 s).
+        La collision n'arrête pas l'épisode : Isaac Lab ne réinitialise un entrepôt que si tous ses drones ont fini."""
         self._refresh()
         mission_done = self._read_frac >= CFG.qr.coverage_target
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -555,7 +556,7 @@ class SwarmQREnv(DirectMARLEnv):
         return terminated, truncated
 
     def _reset_idx(self, env_ids):
-        """Réinitialise : replace les 3 drones (décalés pour ne pas se superposer) + efface la couverture QR."""
+        """Replace les 3 drones au départ (espacés de 0,7 m en x, à 1 m d'altitude), annule leur vitesse et efface les QR lus."""
         if env_ids is None:
             env_ids = self._drones[0]._ALL_INDICES
         super()._reset_idx(env_ids)

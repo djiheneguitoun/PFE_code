@@ -1,26 +1,45 @@
 #!/usr/bin/env bash
+# Installe Isaac Sim 4.5.0 par pip dans le venv ~/isaac_sim_env (Python 3.10), puis Pegasus Simulator
+# (extension d'Isaac Sim pour les drones, clonée dans ~/PegasusSimulator), et crée le script
+# d'activation ~/isaac_sim_env/activate_isaac.sh, que sourcent scripts/11_launch_isaac_sim_drones.sh
+# et scripts/12_launch_aif_isaac_sim.sh.
+# Depuis la racine du projet : ./install_isaac_sim.sh   (--dry-run : vérifie seulement les prérequis)
 
+# Arrêt à la première erreur, à toute variable non définie et à toute erreur dans un tube
 set -euo pipefail
 
+# Version d'Isaac Sim installée par pip
 ISAAC_SIM_VERSION="4.5.0"
+# Version de Python exigée par cette version d'Isaac Sim
 PYTHON_VERSION="3.10"
+# Environnement virtuel Python créé pour Isaac Sim
 VENV_DIR="${HOME}/isaac_sim_env"
+# Dépôt, branche et dossier local de Pegasus Simulator
 PEGASUS_REPO="https://github.com/PegasusSimulator/PegasusSimulator.git"
 PEGASUS_BRANCH="main"
 PEGASUS_DIR="${HOME}/PegasusSimulator"
+# Version minimale du pilote de carte graphique NVIDIA
 MIN_DRIVER_VERSION="535.129"
+# Vrai avec --dry-run : on s'arrête après la vérification des prérequis
 DRY_RUN=false
 
+# Codes de couleur du terminal pour les messages
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; NC='\033[0m'
 
+# Affiche un message d'information (en bleu)
 log_info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
+# Affiche un message de réussite (en vert)
 log_ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+# Affiche un avertissement (en jaune)
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+# Affiche une erreur (en rouge)
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+# Affiche une erreur puis arrête le script (code de sortie 1)
 die() { log_error "$@"; exit 1; }
 
+# Lit les options de la ligne de commande : --dry-run, --help
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
@@ -33,6 +52,7 @@ for arg in "$@"; do
 done
 
 # ─── Étape 1 : Vérification du système ─────────────────────────────────────
+# Vérifie l'OS, le pilote NVIDIA (>= 535.129, sinon arrêt), le GPU, Python 3.10 et l'espace disque (20 Go conseillés)
 check_prerequisites() {
     log_info "═══ Vérification des prérequis ═══"
 
@@ -52,6 +72,7 @@ check_prerequisites() {
     local driver_version
     driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits | head -1)
     # Comparer version complète (ex: 535.129 vs 535.32)
+    # (réponse « yes » par défaut si python3 ou le module packaging échoue)
     local driver_ok
     driver_ok=$(python3 -c "
 from packaging.version import Version
@@ -92,6 +113,7 @@ print('yes' if ok else 'no')
 }
 
 # ─── Étape 2 : Installation des dépendances système ────────────────────────
+# Installe par apt les outils de compilation, Python 3.10 (venv, dev) et les bibliothèques graphiques
 install_system_deps() {
     log_info "═══ Installation des dépendances système ═══"
 
@@ -116,6 +138,7 @@ install_system_deps() {
 }
 
 # ─── Étape 3 : Création de l'environnement virtuel ─────────────────────────
+# Crée (ou réutilise) le venv ~/isaac_sim_env, l'active et met pip à jour
 setup_venv() {
     log_info "═══ Création de l'environnement Python (${VENV_DIR}) ═══"
 
@@ -134,6 +157,7 @@ setup_venv() {
 }
 
 # ─── Étape 4 : Installation d'Isaac Sim via pip ────────────────────────────
+# Installe isaacsim[all] et isaacsim[extscache] 4.5.0 depuis l'index pip de NVIDIA (10 à 20 min)
 install_isaac_sim() {
     log_info "═══ Installation d'Isaac Sim ${ISAAC_SIM_VERSION} via pip ═══"
     log_info "Cette étape peut prendre 10-20 minutes selon la connexion..."
@@ -160,6 +184,7 @@ install_isaac_sim() {
 }
 
 # ─── Étape 5 : Installation de Pegasus Simulator ───────────────────────────
+# Trouve le dossier d'Isaac Sim (ISAACSIM_PATH), clone ou met à jour Pegasus et l'installe avec pip en mode modifiable
 install_pegasus() {
     log_info "═══ Installation de Pegasus Simulator (drones) ═══"
 
@@ -197,6 +222,7 @@ install_pegasus() {
 }
 
 # ─── Étape 6 : Dépendances Python supplémentaires ──────────────────────────
+# Installe numpy, scipy, pyyaml et matplotlib dans le venv
 install_python_extras() {
     log_info "═══ Installation des dépendances Python supplémentaires ═══"
 
@@ -210,6 +236,7 @@ install_python_extras() {
 }
 
 # ─── Étape 7 : Vérification post-installation ──────────────────────────────
+# Vérifie que les modules isaacsim et pegasus s'importent ; avertit sans s'arrêter sinon
 verify_installation() {
     log_info "═══ Vérification de l'installation ═══"
 
@@ -239,6 +266,7 @@ verify_installation() {
 }
 
 # ─── Étape 8 : Génération du script d'activation ───────────────────────────
+# Écrit ~/isaac_sim_env/activate_isaac.sh : active le venv, accepte la licence NVIDIA, exporte ISAACSIM_PATH
 generate_activate_helper() {
     local helper="${VENV_DIR}/activate_isaac.sh"
 
@@ -267,6 +295,7 @@ ACTIVATE_EOF
 }
 
 # ─── Résumé final ───────────────────────────────────────────────────────────
+# Affiche le résumé final (versions, dossiers, commande d'activation)
 print_summary() {
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -286,6 +315,7 @@ print_summary() {
 }
 
 # ─── Main ───────────────────────────────────────────────────────────────────
+# Enchaîne les étapes 1 à 8 (seulement l'étape 1 avec --dry-run)
 main() {
     echo ""
     echo -e "${BLUE}╔══════════════════════════════════════════════════════════╗${NC}"

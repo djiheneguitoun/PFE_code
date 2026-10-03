@@ -1,5 +1,8 @@
-"""Après sa réponse, on demande au modèle quelles informations il a utilisées et quels nombres il
-a lus : pas une preuve, une loupe sur ce qui attire son attention quand il se trompe."""
+"""Introspection (étape 8) : après sa réponse, demande au modèle quels champs il a utilisés et quels
+nombres il a lus (une loupe sur ses erreurs, pas une preuve). Modèle en 4 bits. Depuis swarm_qr/ :
+    $PY experiments/12_guide/introspection.py --missions <dossiers de vol> --modele <dossier du modèle> --cas 15
+Écrit resultats_introspection.json dans ce dossier (vrais chiffres, réponse, explication du modèle).
+"""
 import argparse, json, sys
 from pathlib import Path
 import cv2
@@ -15,6 +18,7 @@ ap.add_argument("--modele", required=True)
 ap.add_argument("--cas", type=int, default=15)
 a = ap.parse_args()
 tous = instantanes([Path(m) for m in a.missions])
+# --cas cas pris à intervalles réguliers dans la liste
 pas = max(len(tous) // a.cas, 1)
 cas = tous[::pas][:a.cas]
 g = Guide(a.modele, max_tokens=160, quantisation="4bit")
@@ -27,10 +31,12 @@ for k, c in enumerate(cas):
     cam = cv2.imread(c["cam"])
     r1 = g.repond_images([cam], q1)
     choix = _reponse_zone(r1, zones)
+    # deuxième question : la même conversation, plus « explique-toi » sur la zone choisie et la bonne
     q2 = (q1 + "\nYour answer was: " + r1.strip()
           + f"\nNow explain: which fields of the data did you use to decide? Quote the exact values "
             f"you read for zone {choix} and for zone {bonne}, then say which is larger. Be brief.")
     r2 = g.repond_images([cam], q2)
+    # vrais chiffres de chaque zone : (codes repérés non lus, distance au drone en m)
     vrai = {z["numero"]: (z.get("n_lire"), round(float(__import__('math').hypot(z['centre'][0]-c['position'][0], z['centre'][1]-c['position'][1])), 1)) for z in zones}
     ligne = {"cas": k, "choix": choix, "bonne": bonne, "juste": choix == bonne,
              "vrais_chiffres (zone: codes reperes non lus, distance m)": {choix: vrai.get(choix), bonne: vrai.get(bonne)},

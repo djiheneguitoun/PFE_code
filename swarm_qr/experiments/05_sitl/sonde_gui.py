@@ -1,25 +1,9 @@
-"""Sonde SITL — un drone ArduPilot dans notre entrepôt, fenêtre graphique.
+"""Test 5, sonde manuelle avec fenêtre : un drone ArduPilot SITL dans l'entrepôt.
 
-La recette vient de ce qui a déjà marché, rien n'est improvisé :
-- démarrage, boucle et arrêt propre : scripts/11_isaac_sim_drones.py et 12_aif_isaac_sim.py,
-  le pipeline validé du projet (8 runs archivés dans logs/runs/) ;
-- backend ArduPilot : l'exemple officiel de Pegasus (examples/11_ardupilot_multi_vehicle.py) ;
-- pas de temps : WORLD_SETTINGS["ardupilot"] (physique à 1/800 s), le réglage que l'interface
-  officielle de Pegasus applique pour ArduPilot — l'exemple, lui, l'oublie ;
-- décor : NOTRE entrepôt par son URL directe, déjà en cache local. Jamais les décors cloud de
-  Pegasus : leur téléchargement bloque la fenêtre, et c'est lui qui déclenchait le dialogue
-  « l'application ne répond pas » de GNOME.
-
-Ce qui se passe au lancement :
-1. la fenêtre Isaac s'ouvre (~10 s, jusqu'à ~45 s au tout premier lancement, shaders) ;
-2. l'entrepôt apparaît, le drone Iris est posé dans l'allée ;
-3. un terminal MAVProxy s'ouvre tout seul (lancement automatique d'ArduPilot SITL) ;
-4. dans ce terminal, taper :   mode guided     puis     arm throttle     puis     takeoff 3
-5. le drone décolle ; sa position s'affiche aussi ici, dans ce terminal-ci.
-
-Arrêt : Ctrl+C ici, ou fermer la fenêtre Isaac. Pegasus tue alors le SITL et MAVProxy.
-Si GNOME affiche « ne répond pas » pendant un chargement : cliquer « Attendre ».
-
+Ouvre Isaac Sim en fenêtre, charge l'entrepôt et un drone Iris ; un terminal MAVProxy (console
+de commande d'ArduPilot) s'ouvre seul : y taper `mode guided`, `arm throttle`, `takeoff 3`. La
+position du drone s'affiche ici toutes les 2 s. Arrêt : Ctrl+C ou fermer la fenêtre (étapes et
+origine de la recette : A_LIRE_POUR_LE_PROMOTEUR/README.md). Depuis la racine du projet :
   DISPLAY=:1 ~/isaac5_env/bin/python swarm_qr/experiments/05_sitl/sonde_gui.py
 """
 
@@ -30,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[2]  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -60,17 +44,19 @@ from pegasus.simulator.params import ROBOTS, WORLD_SETTINGS  # noqa: E402
 
 from swarm_qr.env.config import WAREHOUSE_PRIM, WAREHOUSE_USD  # noqa: E402
 
-SPAWN = (-5.0, 0.0, 0.10)  # dans l'allée ouest, dégagée du sol au plafond
+SPAWN = (-5.0, 0.0, 0.10)  # m (x, y, z) : dans l'allée ouest, dégagée du sol au plafond
 
 
 def build_world(pg: PegasusInterface) -> World:
-    """La World au pas de temps officiel ArduPilot (1/800 s), pas celui de l'exemple."""
+    """Crée et renvoie le monde Isaac au pas de physique officiel d'ArduPilot (1/800 s), et non
+    à celui de l'exemple Pegasus."""
     pg._world = World(**WORLD_SETTINGS["ardupilot"])
     return pg.world
 
 
 def load_scene(world: World) -> None:
-    """Notre entrepôt (URL directe, cache local) + sol + lumière."""
+    """Charge notre entrepôt (adresse directe, déjà en cache local, jamais les décors en ligne de
+    Pegasus), le sol et une lumière d'ambiance."""
     add_reference_to_stage(usd_path=WAREHOUSE_USD, prim_path=WAREHOUSE_PRIM)
     world.scene.add_default_ground_plane()
 
@@ -84,7 +70,7 @@ def load_scene(world: World) -> None:
 
 
 def create_drone(pg: PegasusInterface) -> Multirotor:
-    """Un Iris avec le backend ArduPilot en lancement automatique."""
+    """Crée et renvoie le drone Iris relié à ArduPilot SITL, que Pegasus lance automatiquement."""
     backend = ArduPilotMavlinkBackend(
         config=ArduPilotMavlinkBackendConfig(
             {
@@ -109,9 +95,12 @@ def create_drone(pg: PegasusInterface) -> Multirotor:
 
 
 def main() -> None:
+    """Construit la scène, lance la simulation et affiche la position du drone toutes les 2 s,
+    jusqu'à Ctrl+C ou la fermeture de la fenêtre."""
     running = True
 
     def on_signal(sig, frame):
+        """Demande l'arrêt propre de la boucle (Ctrl+C ou signal d'arrêt)."""
         nonlocal running
         running = False
 

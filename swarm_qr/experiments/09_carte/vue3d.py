@@ -1,9 +1,8 @@
-"""La carte en trois dimensions : un fichier HTML autonome que n'importe quel navigateur ouvre.
+"""Fabrique la carte en 3D : carte_3d.html (à tourner à la souris, vol à rejouer) et carte_3d.png (image fixe).
 
-On y tourne autour de l'entrepôt à la souris. Les cubes sombres sont les obstacles vus par le
-lidar, les cubes bleutés ce qui a été vu d'assez près pour lire, les billes vertes les codes
-lus, les billes orange les motifs repérés sans être lus, le trait bleu la trajectoire du
-drone. Les racks vrais s'affichent en fil de fer rouge pour comparer la carte à la vérité.
+Appelé par analyse.py, ou seul depuis ce dossier : `python vue3d.py` (lit carte.npz et vol.json). La page
+s'ouvre dans n'importe quel navigateur. Couleurs : obstacles vus par le lidar en gris, zones vues d'assez
+près pour lire en bleu clair, codes lus en vert, pistes en orange, trajet en bleu, racks vrais en rouge.
 """
 
 from __future__ import annotations
@@ -14,16 +13,18 @@ from pathlib import Path
 
 import numpy as np
 
+# dossier de ce script ; la racine du projet est ajoutée au chemin d'import
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2]))
 
 from swarm_qr import mapping  # noqa: E402
 from swarm_qr.env.config import INTERIOR  # noqa: E402
 
-TRAJ_MAX = 4000
+TRAJ_MAX = 4000     # points de trajectoire au plus dans la page ; au-delà, on n'en garde qu'un sur n
 
 
 def donnees(carte: mapping.Carte, vol: dict) -> dict:
+    """Renvoie ce que la page affiche : cases occupées et lisibles, codes lus, pistes, trajectoire, racks et panneaux vrais, résumé."""
     occ = np.argwhere(carte.occupation > mapping.SEUIL_OCCUPE)
     couv = np.argwhere(carte.couverture > 0)
     traj = vol.get("trajectoire", [])
@@ -48,6 +49,7 @@ def donnees(carte: mapping.Carte, vol: dict) -> dict:
     }
 
 
+# la page HTML ; __DONNEES__ est remplacé par les données en JSON
 GABARIT = r"""<!doctype html>
 <html lang="fr">
 <head>
@@ -279,7 +281,7 @@ anime();
 
 
 def image(carte: mapping.Carte, vol: dict, sortie: Path) -> Path:
-    """La même carte en image fixe, pour la fiche et le mémoire : deux points de vue."""
+    """Dessine la carte en image fixe (deux points de vue, bande de vol 0,6–5,5 m seulement) dans `sortie` et renvoie ce chemin."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -339,11 +341,13 @@ def image(carte: mapping.Carte, vol: dict, sortie: Path) -> Path:
 
 
 def genere(carte: mapping.Carte, vol: dict, sortie: Path) -> Path:
+    """Écrit la page HTML de la carte (données incluses dans la page) dans `sortie` et renvoie ce chemin."""
     html = GABARIT.replace("__DONNEES__", json.dumps(donnees(carte, vol), separators=(",", ":")))
     sortie.write_text(html)
     return sortie
 
 
+# lancé seul : régénère la page et l'image à partir de carte.npz et vol.json de ce dossier
 if __name__ == "__main__":
     carte = mapping.Carte.charge(HERE / "carte")
     vol = json.loads((HERE / "vol.json").read_text())

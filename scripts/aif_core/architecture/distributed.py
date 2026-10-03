@@ -1,3 +1,9 @@
+"""Architecture distribuée : chaque drone choisit lui-même son action.
+
+Chaque drone envoie sa carte aux drones situés à moins de neighbor_radius_m (5 m par défaut ; retard = latence
+ns-3) et planifie sur sa carte fusionnée avec les dernières cartes reçues. Si tous les liens drone-drone sont
+coupés, les drones attendent la bascule (switch_latency_ms : 2 s) puis continuent seuls (mode « solo »).
+"""
 from __future__ import annotations
 
 import math
@@ -10,9 +16,11 @@ from ..planner import get_planner
 
 
 class DistributedPlanner:
+    """Planificateur distribué : décision locale de chaque drone, avec échange de cartes entre voisins."""
 
     def __init__(self, cfg, msg_queue: MessageQueue,
                  ns3: NS3LatencyReader, link_state: LinkState):
+        """Prépare le planificateur (AIF ou heuristique) ; aucune bascule n'est programmée au départ."""
         self.cfg = cfg
         self.msg_queue = msg_queue
         self.ns3 = ns3
@@ -23,6 +31,7 @@ class DistributedPlanner:
         self._switch_active_at_step: Optional[int] = None
 
     def _phase(self, current_step: int) -> str:
+        """Renvoie le mode du pas : "active" (liens OK), "switching" (bascule en cours) ou "solo" (plus aucun lien)."""
         if not self.link_state.all_drone_links_cut:
             return "active"
         if self._switch_active_at_step is None:
@@ -32,7 +41,9 @@ class DistributedPlanner:
         return "solo"
 
     def broadcast_beliefs(self, active_agents: List, current_step: int) -> None:
-        # Détection du cut total → programmer la transition
+        """Envoie la carte de chaque drone à chaque voisin à portée : retardée par la latence ns-3 (0 sans ns-3),
+        perdue si le lien est coupé ; aucun envoi pendant la bascule."""
+        # Première fois que tous les liens sont coupés : on programme la bascule.
         if (self.link_state.all_drone_links_cut
                 and self._switch_active_at_step is None):
             switch_steps = max(1, math.ceil(
@@ -66,11 +77,13 @@ class DistributedPlanner:
 
     def plan_step(self, active_agents: List, global_fused_belief: BeliefGrid,
                   phase: str, current_step: int) -> None:
+        """Fait choisir à chaque drone son action sur sa carte fusionnée avec celles de ses voisins joignables,
+        puis la fait exécuter ; aucune décision pendant la bascule."""
         del global_fused_belief
         ph = self._phase(current_step)
 
         if ph == "switching":
-            # Transition : drones gelés, pas de nouvelle décision
+            # Bascule : pas de nouvelle décision, les drones gardent leur dernière cible
             for a in active_agents:
                 a.last_action_fresh = False
                 a.last_decision_source = "dist_switching"
@@ -78,6 +91,7 @@ class DistributedPlanner:
             return
 
         for a in active_agents:
+            # Positions des autres drones : servent à éviter les collisions
             others = [(o.x, o.y) for o in active_agents if o.id != a.id]
 
             neighbors = [

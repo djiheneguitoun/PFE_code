@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Phase 07 : vol automatique simple de N drones ArduPilot SITL via MAVLink (protocole de messages vers le pilote automatique).
+
+Étapes : connexion, attente de l'EKF (filtre qui estime la position), mode GUIDED, armement, décollage à des altitudes
+étagées, vol stationnaire, atterrissage. Il faut d'abord lancer 06_launch_multi_drones.sh (Gazebo + SITL).
+Positions réécrites chaque seconde dans /tmp/drone_positions.csv (lu par les ponts réseau 08 et 09).
+Usage : python3 scripts/07_multi_drone_flight.py [--drones 3] [--altitude 4] [--alt-step 1] [--hover 15] [--ekf-wait 20]
+"""
 
 import argparse
 import signal
@@ -12,7 +19,7 @@ except ImportError:
     sys.exit(1)
 
 
-# Modes de vol ArduCopter
+# Modes de vol ArduCopter (numéro « custom_mode » envoyé par MAVLink ; ce script utilise GUIDED et LAND)
 MODE_STABILIZE = 0
 MODE_ALT_HOLD = 2
 MODE_AUTO = 3
@@ -29,7 +36,7 @@ MODE_NAMES = {
 
 # Fonctions drone
 def connect_drone(instance, timeout=30):
-    """Connexion à une instance ArduPilot SITL."""
+    """Se connecte au SITL n° `instance` (tcp:127.0.0.1:5760 + 10·instance) ; renvoie la connexion, ou None après `timeout` s."""
     port = 5760 + instance * 10
     addr = f"tcp:127.0.0.1:{port}"
     print(f"  Drone {instance} : connexion à {addr}...", end=" ", flush=True)
@@ -44,7 +51,7 @@ def connect_drone(instance, timeout=30):
 
 
 def set_mode(conn, mode_id, timeout=10):
-    """Passer en mode de vol spécifique."""
+    """Demande le mode de vol `mode_id` ; renvoie vrai si le drone le confirme avant `timeout` s."""
     conn.mav.set_mode_send(
         conn.target_system,
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
@@ -59,7 +66,7 @@ def set_mode(conn, mode_id, timeout=10):
 
 
 def arm_drone(conn, timeout=30):
-    """Armer les moteurs du drone."""
+    """Arme les moteurs ; renvoie vrai si le drone se déclare armé avant `timeout` s."""
     conn.mav.command_long_send(
         conn.target_system,
         conn.target_component,
@@ -78,7 +85,7 @@ def arm_drone(conn, timeout=30):
 
 
 def disarm_drone(conn):
-    """Désarmer les moteurs du drone."""
+    """Envoie l'ordre de désarmer les moteurs, sans attendre de confirmation."""
     conn.mav.command_long_send(
         conn.target_system,
         conn.target_component,
@@ -89,28 +96,28 @@ def disarm_drone(conn):
 
 
 def takeoff(conn, altitude):
-    """Envoyer la commande de décollage."""
+    """Envoie l'ordre de décoller jusqu'à `altitude` m (drone armé et en mode GUIDED)."""
     conn.mav.command_long_send(
         conn.target_system,
         conn.target_component,
         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-        0,            
-        0,             
+        0,             # confirmation
+        0,             # param 1 (tangage minimal) : 0
         0, 0, 0, 0, 0,
-        altitude       
+        altitude       # param 7 : altitude cible (m)
     )
 
 
 def get_altitude(conn, timeout=2):
-    """Récupère l'altitude actuelle (z-up) du drone."""
+    """Renvoie l'altitude du drone en m (positive vers le haut), ou None si aucun message en `timeout` s."""
     msg = conn.recv_match(type='LOCAL_POSITION_NED', blocking=True, timeout=timeout)
     if msg:
-        return -msg.z  
+        return -msg.z  # repère NED : z est compté vers le bas
     return None
 
 
 def get_position_str(conn, timeout=1):
-    """Récupère une string formatée de la position."""
+    """Renvoie la position (x, y, altitude) du drone sous forme de texte, ou « N/A »."""
     msg = conn.recv_match(type='LOCAL_POSITION_NED', blocking=True, timeout=timeout)
     if msg:
         return f"({msg.x:7.2f}, {msg.y:7.2f}, {-msg.z:5.2f}m)"
@@ -118,7 +125,7 @@ def get_position_str(conn, timeout=1):
 
 
 def wait_altitude(conn, target_alt, tolerance=1.0, timeout=30):
-    """Attendre que le drone atteigne une altitude cible."""
+    """Attend que l'altitude soit à `tolerance` m de `target_alt` ; renvoie faux après `timeout` s."""
     t0 = time.time()
     while time.time() - t0 < timeout:
         alt = get_altitude(conn, timeout=2)
@@ -129,7 +136,7 @@ def wait_altitude(conn, target_alt, tolerance=1.0, timeout=30):
 
 
 def request_data_streams(conn, rate_hz=4):
-    """Demander les flux de données au drone."""
+    """Demande au drone d'envoyer ses messages de position à `rate_hz` Hz."""
     conn.mav.request_data_stream_send(
         conn.target_system,
         conn.target_component,
@@ -138,12 +145,11 @@ def request_data_streams(conn, rate_hz=4):
     )
 
 
-POS_CSV = "/tmp/drone_positions.csv"
+POS_CSV = "/tmp/drone_positions.csv"  # une ligne « id,x,y,altitude » (m) par drone, réécrite à chaque appel
 
 
 def write_positions_csv(connections):
-    """Écrit les positions actuelles de tous les drones dans le CSV.
-    Retourne une string résumée des positions pour l'affichage."""
+    """Réécrit POS_CSV avec la position actuelle de chaque drone et renvoie un résumé texte pour l'affichage."""
     parts = []
     with open(POS_CSV, "w") as pf:
         for i, conn in enumerate(connections):
@@ -159,6 +165,7 @@ def write_positions_csv(connections):
 
 
 def main():
+    """Enchaîne les 6 étapes du vol : connexion, attente EKF, GUIDED, armement, décollage + vol stationnaire, atterrissage."""
     parser = argparse.ArgumentParser(
         description='Vol automatique multi-drones ArduPilot SITL'
     )
@@ -231,7 +238,7 @@ def main():
         target_alts.append(alt)
         takeoff(conn, alt)
         print(f"  Drone {i} : takeoff → {alt}m")
-        time.sleep(2)  # Délai entre décollages
+        time.sleep(2)  # 2 s entre deux décollages ; chaque drone vole 1 m (--alt-step) plus haut que le précédent
 
     print()
     print(f"  Attente des altitudes cibles... (positions → {POS_CSV})")
@@ -248,7 +255,7 @@ def main():
                     all_reached[i] = True
         done = sum(all_reached)
         print(f"  ↗ t={t_takeoff:3d}s | {done}/{n_drones} at target | {pos_line}")
-        if t_takeoff >= 60:  # safety timeout
+        if t_takeoff >= 60:  # sécurité : pas plus de 60 s d'attente
             print("  ⚠ Timeout décollage (60s), on continue")
             break
     print()

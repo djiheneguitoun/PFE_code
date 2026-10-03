@@ -1,8 +1,6 @@
-"""Calibre le gate de lecture sur le décodeur RÉEL (cv2.QRCodeDetector — le même que Pore et al.).
+"""Mesure jusqu'où et sous quel angle le vrai décodeur OpenCV (celui de Pore et al.) lit un QR de l'entrepôt.
 
-Rend des images caméra d'un QR de l'entrepôt à distances/angles contrôlés, tente le décodage,
-et sort les seuils mesurés (distance max, angle max) + un CSV dans docs/.
-
+Rend des images caméra à distances et angles contrôlés, affiche les seuils conseillés et écrit docs/calibration_gate.csv.
   PYTHONUNBUFFERED=1 ~/isaac5_env/bin/python rl_inventory/swarmscan_map/calibrate_gate.py \
       --headless --enable_cameras --kit_args="--/rtx/verifyDriverVersion/enabled=false"
 """
@@ -17,6 +15,7 @@ parser.add_argument("--fov_deg", type=float, default=60.0, help="FOV horizontal 
 parser.add_argument("--settle_frames", type=int, default=12, help="frames de rendu par pose")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# Isaac Sim doit démarrer AVANT d'importer omni, pxr, isaaclab et le reste du projet
 simulation_app = AppLauncher(args).app
 
 import csv
@@ -37,11 +36,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from rl_inventory.config_rl import CFG  # noqa: E402
 from rl_inventory.qr_task import FACES, attach_qr_to_cartons, carton_qr_world_poses, find_cartons  # noqa: E402
 
-DOCS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "docs"))
+DOCS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "docs"))  # dossier docs/ à la racine (sortie du CSV)
 
 
 def look_at_matrix(eye: np.ndarray, target: np.ndarray) -> Gf.Matrix4d:
-    """Transform monde d'une caméra USD (regarde le long de −Z) posée en eye, visant target."""
+    """Renvoie la matrice de pose d'une caméra USD placée en `eye` et visant `target` (elle regarde selon −Z)."""
     fwd = target - eye
     fwd = fwd / np.linalg.norm(fwd)
     z = -fwd
@@ -59,8 +58,10 @@ def look_at_matrix(eye: np.ndarray, target: np.ndarray) -> Gf.Matrix4d:
 
 
 def main():
+    """Construit la scène, choisit un QR dégagé, balaie la distance puis l'angle, écrit le CSV et affiche les seuils conseillés."""
     create_new_stage()
     stage = omni.usd.get_context().get_stage()
+    # entrepôt chargé depuis l'URL de config_rl.py (serveur de contenu Omniverse : accès Internet requis)
     add_reference_to_stage(CFG.scene.warehouse_usd, "/World/Warehouse")
 
     ground = sim_utils.GroundPlaneCfg()
@@ -76,7 +77,7 @@ def main():
     pos, norm = np.array(pos), np.array(norm)
 
     cam = UsdGeom.Camera.Define(stage, "/World/CalibCam")
-    aperture = 20.955
+    aperture = 20.955     # mm : largeur du capteur de la caméra USD ; la focale en découle pour un champ de --fov_deg
     focal = aperture / (2.0 * math.tan(math.radians(args.fov_deg) / 2.0))
     cam.CreateFocalLengthAttr(focal)
     cam.CreateHorizontalApertureAttr(aperture)
@@ -87,6 +88,7 @@ def main():
     rp = rep.create.render_product("/World/CalibCam", tuple(args.resolution))
     annot = rep.AnnotatorRegistry.get_annotator("rgb")
     annot.attach([rp])
+    # décodeur OpenCV « Aruco » s'il existe dans la version installée, sinon le décodeur classique
     try:
         detector = cv2.QRCodeDetectorAruco()
     except AttributeError:
@@ -94,7 +96,7 @@ def main():
     sim.reset()
 
     def decode_all(img_bgr: np.ndarray) -> set[str]:
-        """Décodage robuste : multi-QR, natif puis upscale ×3 (faiblesse basse résolution d'OpenCV)."""
+        """Renvoie les textes des QR décodés, image essayée telle quelle puis agrandie ×3 (OpenCV peine en basse résolution)."""
         found: set[str] = set()
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         for im in (gray, cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)):
@@ -104,13 +106,15 @@ def main():
         return found
 
     def render_decode(eye: np.ndarray, target: np.ndarray, expected: str) -> bool:
+        """Place la caméra, rend l'image (--settle_frames rendus, 12 par défaut) et renvoie vrai si le QR attendu est décodé."""
         op.Set(look_at_matrix(eye, target))
         for _ in range(args.settle_frames):
             sim.render()
         img = np.asarray(annot.get_data())[..., :3].astype(np.uint8)
         return expected in decode_all(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
-    # 1. choisir une face de test dégagée (hauteur d'épaule, SON QR décodé de face à 1.5 m)
+    # 1. choisir une face de test dégagée : parmi les 40 QR les plus proches de 1,4 m de haut,
+    #    le premier dont le QR est décodé de face à 1,5 m
     heights = pos[:, 2]
     order = np.argsort(np.abs(heights - 1.4))
     face_idx = None
@@ -130,9 +134,11 @@ def main():
     rows, trials = [], 2
 
     def success_rate(eye):
+        """Renvoie le taux de décodage du QR de test vu depuis `eye` (sur 2 essais)."""
         return sum(render_decode(eye, p, target_id) for _ in range(trials)) / trials
 
-    # 2. distance max (frontal)
+    # 2. distance max, de face : de 0,75 à 5 m par pas de 0,25 m ; « décodé » = au moins 50 % ;
+    #    arrêt dès qu'on dépasse de 0,75 m la dernière distance réussie
     d_ok = 0.0
     for d in np.arange(0.75, 5.01, 0.25):
         rate = success_rate(p + n * d)
@@ -143,7 +149,8 @@ def main():
         elif d > d_ok + 0.75:
             break
 
-    # 3. angle max (à 2/3 de la distance max)
+    # 3. angle max, à 2/3 de la distance max : de 0 à 75° par pas de 5° (caméra tournée autour
+    #    du QR, à plat) ; arrêt 15° après le dernier angle réussi
     d_test = max(0.75, round(d_ok * 2 / 3 / 0.25) * 0.25)
     a_ok = 0.0
     side = np.cross(np.array([0.0, 0.0, 1.0]), n)
@@ -166,6 +173,7 @@ def main():
         w.writerow(["sweep", "distance_m", "angle_deg", "decode_rate"])
         w.writerows(rows)
 
+    # seuils conseillés avec marge : 85 % de la distance max, angle max − 5°
     reco_d = round(d_ok * 0.85, 2)
     reco_a = max(0.0, a_ok - 5.0)
     print("\n=============== CALIBRATION GATE (cv2.QRCodeDetector, décodeur de Pore) ===============")

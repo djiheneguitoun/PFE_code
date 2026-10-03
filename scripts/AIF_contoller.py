@@ -1,29 +1,9 @@
-"""
-Threaded multi-agent LiDAR belief-mapping + action planner CONTROLLER.
+"""Premier prototype du contrôleur d'inférence active (AIF), sur une grille abstraite et sans simulateur.
 
-Integration:
-    controller = ThreadedLiDARController(
-        w=W, h=H,
-        n_agents=N,
-        initial_positions=((x0,y0), (x1,y1), ...),
-        max_range=6,
-    )
-
-    # each env tick:
-    actions = controller.step(observations)   # observations is tuple length N
-    # send actions back to env
-
-Agent IDs:
-- Each agent has a stable integer id: agent.agent_id
-- Order of observations/actions corresponds to agent_id by default (0..N-1)
-
-IMPORTANT:
-- This controller needs each agent’s (x,y) to update belief correctly.
-- This version updates internal poses by assuming the environment executes the
-  previously returned actions exactly.
-- If the environment can block moves, we should call:
-      controller.set_positions(true_positions_from_env)
-  before controller.step(observations).
+Chaque agent mesure la distance aux obstacles dans 4 directions (N, E, S, W), met à jour sa carte d'occupation,
+les cartes sont fusionnées, puis chaque agent choisit l'une des 9 actions en minimisant une « énergie libre attendue » G
+(calculs parallélisés, un fil par agent). Ancêtre de aif_core/ (mêmes paramètres).
+Usage : controller = ThreadedLiDARController(w, h, n_agents, positions) puis actions = controller.step(observations).
 """
 
 from __future__ import annotations
@@ -38,20 +18,24 @@ from concurrent.futures import ThreadPoolExecutor
 # Basic math utils
 # ============================================================
 
-L_MAX = 30.0
+L_MAX = 30.0  # borne des log-odds : évite des probabilités exactement égales à 0 ou 1
 
 def clamp(x: float, lo: float, hi: float) -> float:
+    """Renvoie x ramené dans l'intervalle [lo, hi]."""
     return max(lo, min(hi, x))
 
 def bernoulli_entropy(p: float) -> float:
+    """Renvoie l'incertitude (entropie, en nats) d'une case occupée avec la probabilité p : 0 si sûre, ln 2 ≈ 0,69 si p = 0,5."""
     p = clamp(p, 1e-6, 1 - 1e-6)
     return -(p * math.log(p) + (1 - p) * math.log(1 - p))
 
 def logit(p: float) -> float:
+    """Convertit une probabilité en log-odds ln(p / (1 − p))."""
     p = clamp(p, 1e-6, 1 - 1e-6)
     return math.log(p / (1 - p))
 
 def inv_logit(l: float) -> float:
+    """Convertit des log-odds en probabilité (calcul stable même pour de grandes valeurs)."""
     if l >= 0:
         z = math.exp(-l)
         return 1.0 / (1.0 + z)
@@ -60,10 +44,8 @@ def inv_logit(l: float) -> float:
         return z / (1.0 + z)
 
 def softmax_pick(candidates, T: float, rng: random.Random):
-    """
-    candidates: list of (name, dx, dy, G) where lower G is better.
-    Samples action with P(a) ∝ exp(-G/T)
-    """
+    """Tire au hasard une action parmi `candidates` (nom, dx, dy, G) avec une probabilité ∝ exp(−G/T) :
+    plus G est bas, plus l'action a de chances d'être choisie ; renvoie l'action tirée."""
     T = max(T, 1e-6)
     m = min(c[3] for c in candidates)  # stability shift
     weights = [math.exp(-(c[3] - m) / T) for c in candidates]
@@ -80,9 +62,11 @@ def softmax_pick(candidates, T: float, rng: random.Random):
 # Directions and actions
 # ============================================================
 
+# 4 directions du LiDAR simplifié : décalage (dx, dy) en cases ; y augmente vers le sud
 DIRS4 = {"N": (0, -1), "E": (1, 0), "S": (0, 1), "W": (-1, 0)}
 DIR_LIST = ["N", "E", "S", "W"]
 
+# 9 actions : rester sur place ou aller dans l'une des 8 cases voisines
 ACTIONS = [
     ("stay", 0, 0),
     ("N", 0, -1),
@@ -100,7 +84,9 @@ ACTIONS = [
 # ============================================================
 
 class BeliefMap:
+    """Carte d'occupation d'un agent : probabilité que chaque case soit un obstacle, gardée aussi en log-odds."""
     def __init__(self, w: int, h: int, p0: float = 0.5):
+        """Crée une carte de w × h cases valant toutes la probabilité a priori p0 (0,5 = inconnu)."""
         self.w = w
         self.h = h
         self.p0 = p0
@@ -109,13 +95,16 @@ class BeliefMap:
         self.l = [[self.l0 for _ in range(w)] for _ in range(h)]
 
     def prob(self, x: int, y: int) -> float:
+        """Renvoie la probabilité d'obstacle de la case (x, y)."""
         return self.p[y][x]
 
     def update_logodds(self, x: int, y: int, delta_l: float):
+        """Ajoute delta_l aux log-odds de la case (borné à ±L_MAX) et met à jour sa probabilité."""
         self.l[y][x] = clamp(self.l[y][x] + delta_l, -L_MAX, L_MAX)
         self.p[y][x] = inv_logit(self.l[y][x])
 
     def mean_entropy(self) -> float:
+        """Renvoie l'entropie moyenne de la carte (incertitude moyenne par case)."""
         tot = 0.0
         n = self.w * self.h
         for y in range(self.h):
@@ -128,6 +117,7 @@ class BeliefMap:
 # ============================================================
 
 def fuse_beliefs(beliefs: List[BeliefMap], method: str = "logodds", weights=None) -> BeliefMap:
+    """Fusionne plusieurs cartes en une seule : moyenne pondérée des log-odds (« logodds ») ou des probabilités (« avg »)."""
     assert len(beliefs) > 0
     w, h = beliefs[0].w, beliefs[0].h
     fused = BeliefMap(w, h, p0=beliefs[0].p0)
@@ -161,6 +151,7 @@ def fuse_beliefs(beliefs: List[BeliefMap], method: str = "logodds", weights=None
     return fused
 
 def mix_beliefs(local_b: BeliefMap, fused_b: BeliefMap, lam: float) -> BeliefMap:
+    """Renvoie le mélange (1 − lam) × carte locale + lam × carte fusionnée, calculé en log-odds."""
     out = BeliefMap(local_b.w, local_b.h, p0=local_b.p0)
     for y in range(out.h):
         for x in range(out.w):
@@ -175,6 +166,7 @@ def mix_beliefs(local_b: BeliefMap, fused_b: BeliefMap, lam: float) -> BeliefMap
 # ============================================================
 
 def local_ray_expected_ig(bmap: BeliefMap, ax: int, ay: int, max_range: int) -> float:
+    """Estime l'information à gagner depuis (ax, ay) : somme des entropies des cases que les 4 rayons ont des chances d'atteindre."""
     tot = 0.0
     for d in DIR_LIST:
         dx, dy = DIRS4[d]
@@ -205,6 +197,7 @@ def can_step_from_belief(
     dy: int,
     occ_thr: float = 0.65,
 ) -> bool:
+    """Renvoie vrai si la case visée est dans la grille et probablement libre (p ≤ occ_thr), coins compris en diagonale."""
     nx, ny = x + dx, y + dy
     if nx < 0 or ny < 0 or nx >= belief.w or ny >= belief.h:
         return False
@@ -220,14 +213,17 @@ def can_step_from_belief(
 # ============================================================
 
 class Agent:
+    """Agent côté contrôleur : identifiant fixe (= rang dans les observations et les actions), position en cases, hasard propre."""
     def __init__(self, agent_id: int, x: int, y: int, max_range: int, seed: int):
-        self.agent_id = int(agent_id)  # <-- ADDED stable id
+        """Crée l'agent n° agent_id en (x, y), avec une portée LiDAR de max_range cases et sa graine aléatoire."""
+        self.agent_id = int(agent_id)  # identifiant stable de l'agent
         self.x = x
         self.y = y
         self.max_range = max_range
         self.rng = random.Random(seed)
 
     def lidar_predict_from_belief(self, belief: BeliefMap) -> List[float]:
+        """Renvoie, pour N, E, S, W, la probabilité prévue par la carte que le rayon touche un obstacle (le bord compte comme obstacle)."""
         preds = []
         for d in DIR_LIST:
             dx, dy = DIRS4[d]
@@ -244,6 +240,7 @@ class Agent:
         return preds
 
     def apply_action_assuming_env_executes(self, dx: int, dy: int, w: int, h: int):
+        """Déplace l'agent de (dx, dy) sans sortir de la grille, en supposant que l'environnement exécute bien l'action."""
         nx = clamp(self.x + dx, 0, w - 1)
         ny = clamp(self.y + dy, 0, h - 1)
         self.x, self.y = int(nx), int(ny)
@@ -259,6 +256,7 @@ def inverse_sensor_update_distance(
     lo_free: float,
     lo_occ: float,
 ):
+    """Met à jour la carte avec les 4 distances mesurées : cases traversées plus libres (lo_free), case touchée plus occupée (lo_occ)."""
     ax, ay = agent.x, agent.y
     for i, dname in enumerate(DIR_LIST):
         dx, dy = DIRS4[dname]
@@ -284,6 +282,7 @@ def inverse_sensor_update_distance(
 
 @dataclass
 class Params:
+    """Poids de l'énergie libre G par phase et cibles de récupération (entropie H_target = 0,44 ; innovation innov_target = 0,16)."""
     w_epistemic: float = 2.5
     w_entropy_recover: float = 3.0
     w_innov_recover: float = 1.2
@@ -298,6 +297,7 @@ class Params:
 
 @dataclass
 class ResilienceState:
+    """État de résilience : stress en cours ou non, step de début, step de récupération, nombre de steps stables depuis."""
     stress_active: bool = False
     stress_t0: int = -1
     recovered_at: int = -1
@@ -316,6 +316,8 @@ def plan_action_belief_only(
     rng: Optional[random.Random] = None,
     occ_thr: float = 0.65,
 ) -> Tuple[str, int, int, float]:
+    """Évalue les 9 actions sur `horizon` steps avec une énergie libre G propre à la phase (normale, récupération pendant
+    alpha steps, durable pendant beta steps), puis en tire une par softmax ; renvoie (nom, dx, dy, G)."""
     if rng is None:
         rng = agent.rng
 
@@ -388,15 +390,12 @@ def plan_action_belief_only(
 # Controller
 # ============================================================
 
-Obs4 = Tuple[int, int, int, int]
-Pos2 = Tuple[int, int]
-Act2 = Tuple[int, int]
+Obs4 = Tuple[int, int, int, int]  # observation : distances N, E, S, W (cases)
+Pos2 = Tuple[int, int]            # position (x, y) en cases
+Act2 = Tuple[int, int]            # action : déplacement (dx, dy)
 
 class ThreadedLiDARController:
-    """
-    Input:  observations = tuple of per-agent observations (N,E,S,W distances)
-    Output: actions      = tuple of per-agent actions (dx,dy), same order as agents
-    """
+    """Contrôleur multi-agents : reçoit les 4 distances (N, E, S, W) de chaque agent et renvoie un déplacement (dx, dy) par agent, dans le même ordre."""
 
     def __init__(
         self,
@@ -418,6 +417,7 @@ class ThreadedLiDARController:
         occ_thr_plan: float = 0.65,
         params: Optional[Params] = None,
     ):
+        """Crée les agents et leurs cartes, la carte fusionnée, les statistiques d'innovation et les fils d'exécution (un par agent par défaut)."""
         if len(initial_positions) != n_agents:
             raise ValueError("initial_positions must have length n_agents")
 
@@ -465,13 +465,16 @@ class ThreadedLiDARController:
 
     @property
     def agent_ids(self) -> Tuple[int, ...]:
-        """Convenience: stable ordering of agent ids (same order as observations/actions)."""
+        """Renvoie les identifiants des agents, dans l'ordre des observations et des actions."""
         return tuple(a.agent_id for a in self.agents)
 
     def close(self):
+        """Arrête les fils d'exécution (à appeler en fin d'utilisation)."""
         self._pool.shutdown(wait=True)
 
     def set_positions(self, positions: Tuple[Pos2, ...]) -> None:
+        """Remplace les positions internes par les vraies positions de l'environnement ; à appeler avant step()
+        si un déplacement peut être bloqué (sinon le contrôleur suppose que chaque action a été exécutée)."""
         if len(positions) != self.n_agents:
             raise ValueError("positions must have length n_agents")
         for i, (x, y) in enumerate(positions):
@@ -479,6 +482,7 @@ class ThreadedLiDARController:
             self.agents[i].y = int(clamp(y, 0, self.h - 1))
 
     def _update_one_agent(self, i: int, fused_snapshot: BeliefMap, obs_i: Sequence[int]) -> float:
+        """Met à jour la carte de l'agent i avec ses 4 distances et renvoie son innovation (écart moyen entre contacts prévus et mesurés)."""
         agent = self.agents[i]
         b = self.beliefs[i]
 
@@ -492,6 +496,7 @@ class ThreadedLiDARController:
         return innov_i
 
     def _plan_one_agent(self, i: int, fused_snapshot: BeliefMap) -> Act2:
+        """Choisit l'action de l'agent i sur un mélange de sa carte (70 %) et de la carte fusionnée (30 %) ; renvoie (dx, dy)."""
         agent = self.agents[i]
         plan_belief = mix_beliefs(self.beliefs[i], fused_snapshot, lam=self.plan_mix)
 
@@ -511,6 +516,7 @@ class ThreadedLiDARController:
         return (dx, dy)
 
     def step(self, observations: Tuple[Obs4, ...]) -> Tuple[Act2, ...]:
+        """Fait un pas : mises à jour en parallèle, fusion, détection d'un pic d'innovation (stress), planification en parallèle ; renvoie les actions."""
         if len(observations) != self.n_agents:
             raise ValueError("observations must have length n_agents")
         for obs in observations:
@@ -526,7 +532,7 @@ class ThreadedLiDARController:
         innovations = [f.result() for f in futs]
         innov_mean = sum(innovations) / max(1, len(innovations))
 
-        # innovation stats
+        # Moyenne et variance glissantes de l'innovation : « pic » si elle dépasse la moyenne de k_sigma écarts-types
         err = innov_mean - self.innov_ema
         self.innov_ema += self.ema_alpha * err
         self.innov_var += self.ema_alpha * ((err * err) - self.innov_var)

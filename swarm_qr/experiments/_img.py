@@ -1,5 +1,9 @@
-"""Écriture des images, planches et vidéos. Aucun lien avec le simulateur : ce module
-s'importe partout, y compris hors d'Isaac."""
+"""Fonctions d'image communes : couleurs, bandeau de texte, planche, photo JPEG, vidéo MP4.
+
+Aucun lien avec le simulateur : ce module s'importe partout, y compris hors d'Isaac Sim.
+Utilisé par les expériences de swarm_qr/experiments et par mission.py, observation.py et
+pore_mission.py (`from swarm_qr.experiments import _img`).
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,8 @@ import numpy as np
 
 
 def to_bgr(rgb) -> np.ndarray:
+    """Convertit une image de caméra RGB ou RGBA (tableau numpy ou tenseur torch, lot accepté)
+    en image BGR 8 bits, l'ordre des couleurs qu'attend OpenCV."""
     arr = rgb.detach().cpu().numpy() if hasattr(rgb, "detach") else np.asarray(rgb)
     if arr.ndim == 4:
         arr = arr[0]
@@ -20,6 +26,8 @@ def to_bgr(rgb) -> np.ndarray:
 
 
 def label(img: np.ndarray, text: str, bottom: bool = False) -> np.ndarray:
+    """Renvoie une copie de l'image avec `text` en blanc sur un bandeau noir de 34 px, en haut
+    (en bas si `bottom`)."""
     out = img.copy()
     h = out.shape[0]
     y0, y1 = (h - 34, h) if bottom else (0, 34)
@@ -29,6 +37,8 @@ def label(img: np.ndarray, text: str, bottom: bool = False) -> np.ndarray:
 
 
 def board(images: list[np.ndarray], path: Path, cols: int = 3, cell: int = 420) -> Path:
+    """Assemble les images en planche de `cols` colonnes (grand côté ramené à `cell` px),
+    l'enregistre en JPEG et renvoie son chemin."""
     if not images:
         raise ValueError("aucune image")
     rows = math.ceil(len(images) / cols)
@@ -49,12 +59,15 @@ def board(images: list[np.ndarray], path: Path, cols: int = 3, cell: int = 420) 
 
 
 def save(img: np.ndarray, path: Path) -> Path:
+    """Enregistre l'image en JPEG (qualité 90), en créant le dossier si besoin ; renvoie le chemin."""
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
     return path
 
 
 def video(frames: list[np.ndarray], path: Path, fps: int = 10) -> Path:
+    """Écrit les images dans une vidéo MP4 (`fps` images/s, à la taille de la première image) ;
+    renvoie le chemin."""
     if not frames:
         raise ValueError("aucune image pour la vidéo")
     h, w = frames[0].shape[:2]
@@ -69,9 +82,12 @@ def video(frames: list[np.ndarray], path: Path, fps: int = 10) -> Path:
 
 
 def side_by_side(*imgs: np.ndarray, gap: int = 8) -> np.ndarray:
+    """Colle les images côte à côte, à la même hauteur, séparées par `gap` px gris ; renvoie
+    l'image obtenue."""
     h = max(i.shape[0] for i in imgs)
 
     def fit(img):
+        """Redimensionne l'image à la hauteur commune `h`, sans la déformer."""
         s = h / img.shape[0]
         return cv2.resize(img, (int(img.shape[1] * s), h))
 

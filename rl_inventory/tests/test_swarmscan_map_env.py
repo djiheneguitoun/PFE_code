@@ -1,6 +1,7 @@
-"""Smoke-test Isaac de SwarmScanMapEnv : obs/récompense/reset/cartes/panne, 6 vérifications.
+"""Test rapide sous Isaac de l'arène v2 SwarmScanMapEnv (dossier swarmscan_map/) : vérifications affichées OK / ÉCHEC.
 
-  bash rl_inventory/launch.sh rl_inventory/tests/test_swarmscan_map_env.py --headless
+Contrôle tailles d'observation, valeurs finies, remplissage et remise à zéro des cartes, tirages au reset, lecture latérale, panne de drone.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/tests/test_swarmscan_map_env.py --headless
 """
 
 import argparse
@@ -29,6 +30,7 @@ from rl_inventory.swarmscan_map.flatten_wrapper import SwarmMapVecEnv  # noqa: E
 
 
 def main():
+    """Crée l'arène v2, fait des pas aléatoires puis des mises en situation (reset, drone téléporté face à un QR, panne) et affiche les verdicts."""
     cfg = SwarmScanMapEnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = SwarmScanMapEnv(cfg)
@@ -65,7 +67,7 @@ def main():
                    not torch.equal(ids_before, env._config_ids) or moved.max().item() > 0.5))
     checks.append(("carte remise à zéro au reset (avant de re-stepper)", map_cleared))
 
-    # gate LATÉRAL : drone téléporté flanc vers un tag → lit ; nez vers le tag → ne lit PAS
+    # lecture LATÉRALE (caméras sur les flancs) : drone téléporté flanc vers un QR → lit ; nez vers le QR → ne lit PAS
     n_faces = len(FACES)
     cand = torch.nonzero(env._readable[0] & ~env._read[0]).squeeze(-1)
     tp = env._qr_pos_local.view(env._n_cartons, n_faces, 3)[cand, 0]
@@ -78,6 +80,7 @@ def main():
     spot = tag_p + tag_n * 1.0
 
     def put_drone0(yaw_val: float):
+        """Téléporte le drone 0 de l'entrepôt 0 à 1 m devant le QR choisi, cap yaw_val (radians), vitesse nulle."""
         root = env._drones[0].data.default_root_state[0:1].clone()
         root[:, :3] = (spot + env.scene.env_origins[0]).unsqueeze(0)
         root[:, 3] = math.cos(yaw_val / 2)
@@ -101,6 +104,7 @@ def main():
     checks.append(("gate latéral : nez → pas de lecture, flanc → lecture",
                    (not read_nose) and read_flank))
 
+    # panne forcée du drone 1 dès maintenant
     env._kill_step[:] = 0
     env._victim[:] = 1
     vec.step(torch.zeros(vec.num_envs, 4, device=env.device))

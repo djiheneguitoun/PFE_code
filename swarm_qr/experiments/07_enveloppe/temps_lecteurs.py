@@ -1,10 +1,8 @@
-"""Temps de décodage des six lecteurs, sur les images déjà enregistrées du banc.
+"""Chronomètre les six lecteurs de QR sur les images déjà enregistrées du banc (sans simulateur).
 
-Complète le tableau de comparaison des lecteurs avec une colonne « temps par image ».
-Aucun simulateur : on relit les images de `images_optique/`.
-
-  temps_lecteurs.py             400 images
-  temps_lecteurs.py --n 2000    toutes les images de la campagne optique
+Ajoute la colonne « temps par image » au tableau des lecteurs ; écrit temps_lecteurs.json.
+Lancement : python temps_lecteurs.py   (400 premières images de images_optique/)
+Options : --n 2000 (toute la campagne optique), --campagne 9019 (lit images_9019/).
 """
 
 from __future__ import annotations
@@ -23,8 +21,10 @@ sys.path.insert(0, str(HERE.parents[2]))
 
 from swarm_qr import perception as P  # noqa: E402
 
+# Les six lecteurs chronométrés (décodeurs de swarm_qr/perception.py) ; un lecteur absent est sauté.
 LECTEURS = ("zxing", "zbar", "pyboof", "opencv", "opencv_aruco", "opencv_aruco_x3")
 
+# --n : nombre d'images chronométrées ; --campagne : suffixe du dossier lu, images_<campagne>/.
 parser = argparse.ArgumentParser()
 parser.add_argument("--n", type=int, default=400)
 parser.add_argument("--campagne", default="optique")
@@ -59,6 +59,7 @@ for nom in LECTEURS:
         except Exception:
             pass
         temps.append((time.perf_counter() - t0) * 1000.0)
+    # En millisecondes : médiane, moyenne et 90e centile (9 images sur 10 sont décodées plus vite).
     resultats[nom] = {
         "images": len(temps),
         "median_ms": round(statistics.median(temps), 1),

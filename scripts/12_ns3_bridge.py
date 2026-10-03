@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Pont vers ns-3 (simulateur de réseau) : lance le scénario WiFi ou 5G en arrière-plan.
+
+ns-3 lit les positions des drones dans /tmp/drone_positions.csv et écrit les latences entre paires dans un CSV
+de /tmp, relu par aif_core/network.py. Utilisé par 12_aif_isaac_sim.py (option --ns3) ; seul, pour tester :
+python3 scripts/12_ns3_bridge.py --scenario wifi --n-drones 3
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,22 +16,24 @@ import time
 from typing import Optional
 
 
-NS3_DIR = os.path.expanduser("~/ns-allinone-3.40/ns-3.40")
-NS3_BIN = os.path.join(NS3_DIR, "ns3")
+NS3_DIR = os.path.expanduser("~/ns-allinone-3.40/ns-3.40")   # dossier d'installation de ns-3.40
+NS3_BIN = os.path.join(NS3_DIR, "ns3")                         # lanceur ns-3
 
-POS_CSV = "/tmp/drone_positions.csv"
-WIFI_OUT_CSV = "/tmp/ns3_output.csv"
-LTE5G_OUT_CSV = "/tmp/drone_latency_ns3.csv"
+POS_CSV = "/tmp/drone_positions.csv"           # entrée : positions des drones (écrites à chaque pas)
+WIFI_OUT_CSV = "/tmp/ns3_output.csv"           # sortie du scénario WiFi : latence par paire de drones
+LTE5G_OUT_CSV = "/tmp/drone_latency_ns3.csv"   # sortie du scénario 5G
 
+# Nom du programme ns-3 de chaque scénario (sources : scenarios/*.cc à la racine du projet)
 SCENARIOS = {
     "wifi": "drone-wifi-scenario",
     "5g":   "drone-5g-nr-scenario",
 }
 
-_ns3_process: Optional[subprocess.Popen] = None
+_ns3_process: Optional[subprocess.Popen] = None   # processus ns-3 en cours (None si arrêté)
 
 
 def _ns3_available() -> bool:
+    """Vérifie que le lanceur ns-3 existe à l'emplacement attendu."""
     return os.path.isfile(NS3_BIN)
 
 
@@ -33,6 +41,8 @@ def launch_ns3(n_drones: int = 3, sim_time: int = 600,
                scenario: str = "wifi",
                pos_csv: str = POS_CSV,
                channel_model: str = "log-distance") -> bool:
+    """Lance le scénario ns-3 choisi en arrière-plan ; renvoie vrai s'il tourne encore 2 s après.
+    En cas d'échec, renvoie faux et la simulation continue avec une latence de 0."""
     global _ns3_process
 
     if scenario not in SCENARIOS:
@@ -94,10 +104,12 @@ def launch_ns3(n_drones: int = 3, sim_time: int = 600,
 
 
 def is_alive() -> bool:
+    """Vérifie que le processus ns-3 tourne encore."""
     return _ns3_process is not None and _ns3_process.poll() is None
 
 
 def stop_ns3() -> None:
+    """Arrête ns-3 : demande polie, puis arrêt forcé après 5 s."""
     global _ns3_process
     if _ns3_process is None:
         return
@@ -115,6 +127,7 @@ def stop_ns3() -> None:
 
 
 def write_drone_positions(positions: dict, path: str = POS_CSV) -> None:
+    """Écrit les positions {id: (x, y, z)} dans le CSV lu par ns-3, sans ligne d'en-tête."""
     # Format CSV : drone_id,x,y,z (réécriture complète à chaque step)
     try:
         with open(path, "w") as f:
@@ -126,11 +139,13 @@ def write_drone_positions(positions: dict, path: str = POS_CSV) -> None:
 
 
 def _signal_handler(sig, frame):
+    """Arrête ns-3 puis quitte le script (Ctrl+C ou signal d'arrêt)."""
     stop_ns3()
     sys.exit(0)
 
 
 def main():
+    """Lance ns-3 seul (pour tester le pont) et attend sa fin ou Ctrl+C ; renvoie le code de sortie (0 = succès)."""
     p = argparse.ArgumentParser(description="NS-3 bridge for Isaac Sim AIF")
     p.add_argument("--scenario", choices=list(SCENARIOS), default="wifi")
     p.add_argument("--n-drones", type=int, default=3)

@@ -1,14 +1,9 @@
-"""
-Mesure 01 — À quelle résolution un QR code reste-t-il lisible ?
+"""Mesure 01 — cherche combien de pixels il faut pour repérer, puis décoder, un QR du projet.
 
-Question : un world model qui encode l'image en 64x64 peut-il voir un QR code ?
-
-Méthode : on génère le MÊME QR que le projet (version 1, correction H, bordure 2),
-on le place dans une scène à une distance donnée, on rend l'image à la résolution
-voulue, et on essaie de le décoder. On répète avec des décalages sous-pixel et de
-petites rotations, parce que le décodage y est très sensible.
-
-Aucun simulateur, aucun GPU. Tourne en quelques minutes sur le processeur.
+Le QR (même appel que scripts/qr_code_system.py) est réduit à diverses tailles avec des défauts
+de caméra (flou, bruit, décalage, rotation), puis lu par OpenCV et pyzbar. Processeur seul, ~10 min :
+    python3 experiments/01_resolution_qr/qr_resolution_test.py
+Écrit resultats_seuil.csv et resultats_portee.csv à côté du script.
 """
 
 import csv
@@ -20,14 +15,15 @@ import numpy as np
 import qrcode
 from qrcode.constants import ERROR_CORRECT_H
 
-OUT = Path(__file__).parent
-FOV_DEG = 60.0
-QR_VERSION = 1
-BORDER = 2
+OUT = Path(__file__).parent  # dossier où sont écrits les CSV (celui du script)
+FOV_DEG = 60.0  # degrés : champ horizontal de la caméra supposée
+QR_VERSION = 1  # version demandée, comme le projet ; fit=True la relève à 2 en pratique
+BORDER = 2  # marge blanche autour du QR, en modules (un module = un petit carré du QR)
 PAYLOAD = "Item#A14-R5"  # même format que la littérature entrepôt (rack, étagère, rangée)
-TRIALS = 30
-RNG = np.random.default_rng(0)
+TRIALS = 30  # essais par taille dans la partie A (la partie C en fait 12 par point)
+RNG = np.random.default_rng(0)  # tirages aléatoires reproductibles (graine 0)
 
+# pyzbar (second décodeur) est facultatif : utilisé seulement s'il est installé.
 try:
     from pyzbar.pyzbar import decode as zbar_decode
     HAS_ZBAR = True
@@ -36,8 +32,8 @@ except ImportError:
 
 
 def make_qr(payload=PAYLOAD):
-    """Reproduit exactement l'appel du projet (scripts/qr_code_system.py).
-    Attention : `fit=True` peut relever la version si la charge utile ne rentre pas."""
+    """Génère le QR comme scripts/qr_code_system.py et renvoie (image, version réelle, largeur en modules).
+    `fit=True` relève la version si le texte ne rentre pas : ici version 2, soit 29 modules marge comprise."""
     qr = qrcode.QRCode(version=QR_VERSION, error_correction=ERROR_CORRECT_H,
                        box_size=20, border=BORDER)
     qr.add_data(payload)
@@ -47,12 +43,13 @@ def make_qr(payload=PAYLOAD):
     return img, qr.version, total
 
 
+# QR de référence, généré une seule fois (20 px par module) : image, version réelle, largeur en modules.
 QR_MASTER, QR_REAL_VERSION, MODULES = make_qr()
 
 
 def render_patch(width_px, rot_deg, dx, dy, blur_sigma, noise_std):
-    """Rend le QR à `width_px` pixels de large, sur un fond de carton, avec les
-    dégradations d'une vraie caméra : flou optique, bruit capteur, sous-pixel."""
+    """Renvoie une image du QR large de `width_px` pixels sur fond carton, avec rotation (degrés),
+    décalage sous-pixel (dx, dy en pixels), flou gaussien (sigma en px) et bruit de capteur."""
     pad = max(8, int(width_px * 0.8))
     canvas = int(width_px + 2 * pad)
 
@@ -86,12 +83,14 @@ def render_patch(width_px, rot_deg, dx, dy, blur_sigma, noise_std):
     return img
 
 
+# Détecteurs QR d'OpenCV : le classique, et la variante Aruco si cette version d'OpenCV l'a.
 _det = cv2.QRCodeDetector()
 _det_aruco = cv2.QRCodeDetectorAruco() if hasattr(cv2, "QRCodeDetectorAruco") else None
 
 
 def try_read(img):
-    """Renvoie (décodé, repéré). 'Repéré' = on a trouvé le motif sans le lire."""
+    """Essaie de lire le QR avec OpenCV puis pyzbar ; renvoie (décodé, repéré).
+    « Repéré » = le motif du QR est trouvé dans l'image, même sans pouvoir le lire."""
     decoded = detected = False
     for det in (d for d in (_det_aruco, _det) if d is not None):
         try:
@@ -118,6 +117,8 @@ def try_read(img):
 
 
 def measure(width_px, trials=TRIALS, blur_sigma=0.6, noise_std=2.0):
+    """Lit `trials` images du QR à `width_px` px (rotation ±3°, décalage ±0,5 px tirés au hasard) ;
+    renvoie (taux de décodage, taux de repérage), entre 0 et 1."""
     dec = det = 0
     for i in range(trials):
         img = render_patch(width_px,
@@ -132,18 +133,20 @@ def measure(width_px, trials=TRIALS, blur_sigma=0.6, noise_std=2.0):
 
 
 def px_width(panel_m, dist_m, res_px):
-    """Largeur apparente du panneau, en pixels, pour une caméra de FOV horizontal donné."""
+    """Renvoie la largeur apparente, en pixels, d'un panneau de `panel_m` m vu de face à `dist_m` m
+    sur une image de `res_px` pixels de large (champ horizontal FOV_DEG)."""
     visible_m = 2.0 * dist_m * math.tan(math.radians(FOV_DEG) / 2.0)
     return panel_m * res_px / visible_m
 
 
 def threshold_from(rows, key, floor=0.5):
-    """Plus petite largeur (px/module) où le taux passe et reste au-dessus de `floor`."""
+    """Renvoie la plus petite taille (px/module) dont le taux `key` atteint `floor` (50 % par défaut), ou None."""
     ok = [r for r in rows if r[key] >= floor]
     return min(r["px_per_module"] for r in ok) if ok else None
 
 
 def main():
+    """Lance les parties A (seuil), B (taille du QR), C (portée), D (conclusion) et écrit les 2 CSV."""
     print(f"Charge utile : {PAYLOAD!r} — version demandée {QR_VERSION}, "
           f"version RÉELLE {QR_REAL_VERSION} (fit=True l'a relevée)")
     print(f"→ {MODULES} modules de large, marge comprise")
@@ -174,6 +177,7 @@ def main():
     print("B. TAILLE PHYSIQUE DU QR, DÉDUITE DE docs/calibration_gate.csv")
     print("=" * 66)
     print("  Mesure du projet : à 1280 px et FOV 60°, ça décode à 1,50 m, pas à 1,75 m.")
+    # côté du panneau = seuil (px/module) × modules × largeur vue à 1,50 m (puis 1,75 m) ÷ 1280 px
     if k_dec:
         lo = k_dec * MODULES * 2 * 1.50 * math.tan(math.radians(FOV_DEG) / 2) / 1280
         hi = k_dec * MODULES * 2 * 1.75 * math.tan(math.radians(FOV_DEG) / 2) / 1280
@@ -196,6 +200,7 @@ def main():
         line = f"{d_m:>7.2f} m | "
         for res in resolutions:
             w = px_width(panel_m, d_m, res)
+            # sous 6 px de large, on ne tente même pas : compté comme illisible
             rate, det = (measure(w, trials=12) if w >= 6 else (0.0, 0.0))
             out.append({"distance_m": d_m, "resolution_px": res,
                         "panel_px": round(w, 1), "px_per_module": round(w / MODULES, 3),
@@ -216,6 +221,7 @@ def main():
     print("D. CONCLUSION")
     print("=" * 66)
     if k_dec:
+        # largeur d'image qui donne k_dec px/module pour ce panneau vu à 1,25 m
         need = k_dec * MODULES * 2 * 1.25 * math.tan(math.radians(FOV_DEG) / 2) / panel_m
         print(f"  Pour décoder à 1,25 m, il faut une image de {need:.0f} px de large.")
         print(f"  Un world model en 64 px est {need / 64:.0f}× en dessous.")

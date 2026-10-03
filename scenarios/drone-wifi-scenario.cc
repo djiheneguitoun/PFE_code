@@ -1,4 +1,9 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+// Scénario ns-3 « Wi-Fi entre drones » : N drones en Wi-Fi 802.11n ad hoc ; toutes les 0,5 s, relit
+// leurs positions dans un CSV et écrit pour chaque paire la distance, le RSSI (puissance reçue) et la latence.
+// Tourne en temps réel pour suivre un vol en direct. Lancé par scripts/08_wifi_bridge.py et scripts/12_ns3_bridge.py.
+// À copier dans scratch/ de ns-3.40, puis depuis ~/ns-allinone-3.40/ns-3.40 :
+//   ./ns3 build && ./ns3 run "drone-wifi-scenario --nDrones=3 --simTime=60"
 
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -10,6 +15,7 @@
 #include "ns3/propagation-module.h"
 
 
+// Active le code du module NS3-Sionna (contrib/sionna, installé par scripts/installation/05)
 #define NS3_SIONNA_AVAILABLE
 #ifdef NS3_SIONNA_AVAILABLE
 #include "ns3/sionna-helper.h"
@@ -32,15 +38,24 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("DroneWifiScenario");
 
 
+// Valeurs par défaut des options de la ligne de commande (voir main)
+// Nombre de drones
 static uint32_t g_nDrones = 3;
+// CSV d'entrée : une ligne d'en-tête, puis id,x,y,z (m) ; réécrit en continu par le script de vol
 static std::string g_posFile = "/tmp/drone_positions.csv";
+// CSV de sortie : une ligne par paire de drones et par mise à jour
 static std::string g_outFile = "/tmp/ns3_output.csv";
+// Durée de la simulation, en s (temps réel : autant de secondes d'horloge)
 static double g_simTime = 60.0;
+// Période de relecture des positions, en s
 static double g_updateInterval = 0.5;
+// Modèle de propagation : "log-distance" (formule simple) ou "sionna" (lancer de rayons)
 static std::string g_channelModel = "log-distance";
+// Pour "sionna" : scène 3D (chemin relatif côté serveur Sionna), puis adresse ZMQ du serveur Python
 static std::string g_sionnaEnv = "simple_room/simple_room.xml"; 
 static std::string g_sionnaUrl = "tcp://localhost:5555";      
 
+// Nœuds ns-3 (un par drone), leurs cartes Wi-Fi et le fichier de sortie ouvert
 static NodeContainer g_droneNodes;
 static NetDeviceContainer g_wifiDevices;
 static std::ofstream g_outputCsv;
@@ -51,6 +66,9 @@ static double g_txPowerDbm = 20.0;
 static Ptr<FlowMonitor> g_flowMonitor;              
 static Ptr<Ipv4FlowClassifier> g_flowClassifier;    
 
+// Puissance d'émission en dBm (g_txPowerDbm), modèle de propagation choisi, et FlowMonitor
+// (compteur de paquets et de délais par flux) qui fournit la latence
+
 // Stats FlowMonitor précédentes
 static FlowMonitor::FlowStatsContainer g_prevFlowStats;
 
@@ -59,10 +77,13 @@ static FlowMonitor::FlowStatsContainer g_prevFlowStats;
 static SionnaHelper* g_sionnaHelper = nullptr;
 #endif
 
+// Position d'un drone, en m
 struct DronePos {
     double x, y, z;
 };
 
+// Lit le CSV des positions (en-tête puis id,x,y,z) et renvoie un vecteur de nDrones positions ;
+// un drone absent du fichier (ou fichier illisible) reste en (0, 0, 0).
 static std::vector<DronePos>
 ReadPositions(const std::string& filename, uint32_t nDrones)
 {
@@ -74,6 +95,7 @@ ReadPositions(const std::string& filename, uint32_t nDrones)
     }
 
     std::string line;
+    // Saute la 1re ligne (l'en-tête)
     if (std::getline(file, line)) {
     }
 
@@ -95,8 +117,8 @@ ReadPositions(const std::string& filename, uint32_t nDrones)
     return positions;
 }
 
-// Extraction de la latence par paire depuis le FlowMonitor
-// Utilise le delta (paquets récents) pas la moyenne cumulative
+// Renvoie la latence en ms de chaque paire de drones (min, max), d'après FlowMonitor : délai moyen
+// des seuls paquets reçus depuis l'appel précédent (pas la moyenne depuis le début) ; garde le plus petit des deux sens.
 static std::map<std::pair<uint32_t, uint32_t>, double>
 GetPairLatencies(void)
 {
@@ -151,7 +173,8 @@ GetPairLatencies(void)
     return result;
 }
 
-// Mise à jour des positions + calcul RSSI/latence
+// Relit les positions, déplace les nœuds, écrit distance, RSSI et latence de chaque paire dans le CSV,
+// puis se replanifie g_updateInterval secondes plus tard.
 static void
 UpdatePositions(void)
 {
@@ -181,6 +204,7 @@ UpdatePositions(void)
             double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
 
           
+            // --- RSSI : puissance reçue (dBm) calculée par le modèle de propagation, sans paquet ---
             Ptr<MobilityModel> mob_i = g_droneNodes.Get(i)->GetObject<MobilityModel>();
             Ptr<MobilityModel> mob_j = g_droneNodes.Get(j)->GetObject<MobilityModel>();
             double rssiDbm = g_propLossModel->CalcRxPower(g_txPowerDbm, mob_i, mob_j);
@@ -192,6 +216,7 @@ UpdatePositions(void)
             if (latIt != pairLatencies.end() && latIt->second > 0.0) {
                 latencyMs = latIt->second;
             } else {
+                // aucun paquet mesuré pour cette paire : estimation = temps de vol de l'onde + 2 ms
                 double propagationMs = (distance / 3e8) * 1000.0;
                 latencyMs = propagationMs + 2.0;
             }
@@ -218,6 +243,8 @@ UpdatePositions(void)
     Simulator::Schedule(Seconds(g_updateInterval), &UpdatePositions);
 }
 
+// Lit les options, construit le réseau Wi-Fi des drones, lance la simulation en temps réel
+// pendant g_simTime secondes et écrit le CSV de sortie.
 int
 main(int argc, char *argv[])
 {
@@ -232,6 +259,7 @@ main(int argc, char *argv[])
     cmd.AddValue("sionnaUrl", "Sionna ZMQ server URL", g_sionnaUrl);
     cmd.Parse(argc, argv);
 
+    // Temps réel : 1 s simulée dure 1 s d'horloge, pour suivre le vol en direct
     GlobalValue::Bind("SimulatorImplementationType",
                       StringValue("ns3::RealtimeSimulatorImpl"));
 
@@ -246,6 +274,7 @@ main(int argc, char *argv[])
     g_droneNodes.Create(g_nDrones);
 
     //  WiFi 
+    // Wi-Fi 802.11n à débit fixe : MCS 7 pour les données, MCS 0 pour les trames de contrôle
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211n);
     wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
@@ -258,6 +287,7 @@ main(int argc, char *argv[])
     wifiPhy.Set("TxPowerEnd", DoubleValue(g_txPowerDbm));
 
     
+    // Canal radio partagé par tous les drones
     Ptr<YansWifiChannel> wifiChannel = CreateObject<YansWifiChannel>();
 
     // Modèle de délai de propagation
@@ -273,6 +303,8 @@ main(int argc, char *argv[])
         NS_LOG_INFO("Scène Sionna : " << g_sionnaEnv);
         NS_LOG_INFO("Serveur ZMQ  : " << g_sionnaUrl);
 
+        // Client du serveur Python Sionna (à lancer à part, cf. scripts/installation/05) ;
+        // mode P2P : propagation calculée pour chaque paire émetteur-récepteur
         g_sionnaHelper = new SionnaHelper(g_sionnaEnv, g_sionnaUrl);
 
        
@@ -304,6 +336,7 @@ main(int argc, char *argv[])
 #endif
     } else {
         NS_LOG_INFO("Modèle Log-Distance (indoor warehouse)");
+        // Perte en log-distance : exposant 3 (intérieur encombré), 40 dB à la distance de référence (1 m par défaut)
         Ptr<LogDistancePropagationLossModel> lossModel =
             CreateObject<LogDistancePropagationLossModel>();
         lossModel->SetAttribute("Exponent", DoubleValue(3.0));
@@ -314,6 +347,7 @@ main(int argc, char *argv[])
     wifiChannel->SetPropagationLossModel(g_propLossModel);
     wifiPhy.SetChannel(wifiChannel);
 
+    // Mode ad hoc : les drones se parlent directement, sans point d'accès
     WifiMacHelper wifiMac;
     wifiMac.SetType("ns3::AdhocWifiMac");
 
@@ -322,6 +356,7 @@ main(int argc, char *argv[])
     InternetStackHelper internet;
     internet.Install(g_droneNodes);
 
+    // Adresses IP 10.1.1.1, 10.1.1.2… : le drone i reçoit 10.1.1.(i+1)
     Ipv4AddressHelper ipv4;
     ipv4.SetBase("10.1.1.0", "255.255.255.0");
     ipv4.Assign(g_wifiDevices);
@@ -349,6 +384,7 @@ main(int argc, char *argv[])
 
 #ifdef NS3_SIONNA_AVAILABLE
    
+    // Donne à Sionna les paramètres radio du Wi-Fi (fréquence, largeur de canal, FFT, sous-porteuses) et le démarre
     if (g_channelModel == "sionna" && g_sionnaHelper != nullptr) {
         double channelWidth = get_channel_width(g_wifiDevices.Get(0));
         int centerFreq = (int)get_center_freq(g_wifiDevices.Get(0));
@@ -368,6 +404,8 @@ main(int argc, char *argv[])
 #endif
 
     //  Trafic UDP Echo entre drones 
+    // Chaque drone i envoie un paquet UDP de 256 octets toutes les 0,1 s (à partir de t = 1 s) au drone
+    // suivant j = i+1 (en anneau) ; FlowMonitor mesure le délai de chaque flux i -> j.
     uint16_t port = 9;
     for (uint32_t i = 0; i < g_nDrones; ++i) {
         uint32_t j = (i + 1) % g_nDrones;
@@ -385,6 +423,7 @@ main(int argc, char *argv[])
         serverApp.Stop(Seconds(g_simTime));
 
        
+        // Client UDP Echo sur le drone source
         UdpEchoClientHelper echoClient(dstAddr, port + j);
         echoClient.SetAttribute("MaxPackets", UintegerValue(999999));
         echoClient.SetAttribute("Interval", TimeValue(Seconds(0.1)));
@@ -413,6 +452,7 @@ main(int argc, char *argv[])
     Simulator::Run();
 
     //  Statistiques finales des flux 
+    // (comme tous les NS_LOG_INFO, visibles seulement avec NS_LOG=DroneWifiScenario=info)
     NS_LOG_INFO("\n=== Statistiques FlowMonitor ===");
     g_flowMonitor->CheckForLostPackets();
     FlowMonitor::FlowStatsContainer stats = g_flowMonitor->GetFlowStats();

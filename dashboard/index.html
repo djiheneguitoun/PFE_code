@@ -1,4 +1,8 @@
 <!DOCTYPE html>
+<!-- Page du tableau de bord « WiFi / 5G + exploration » (première phase du projet).
+     Servie par dashboard_server.py : python3 dashboard/dashboard_server.py, puis ouvrir http://localhost:8050
+     Onglets : Exploration (carte AIF), Comparaison, WiFi 802.11n, 5G NR. La logique est dans app.js,
+     le style dans style.css ; Chart.js et les polices sont chargés depuis Internet. -->
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -10,7 +14,7 @@
 </head>
 <body>
 
-<!-- ─── HEADER ─── -->
+<!-- ─── EN-TÊTE : logo, onglets (data-scenario), état de la connexion, horloge ─── -->
 <header class="top-bar">
     <div class="logo">
         <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -35,14 +39,14 @@
     </div>
 </header>
 
-<!-- ─── MAIN ─── -->
+<!-- ─── CONTENU : chaque bloc porte data-vis = liste des onglets où il est visible ─── -->
 <main class="dashboard">
 
     <!-- ═══════════════════════════════════════════════════════
-         EXPLORATION — Active Inference — Visual Dashboard
+         ONGLET EXPLORATION — inférence active (AIF)
          ═══════════════════════════════════════════════════════ -->
 
-    <!-- HERO: Big global exploration map (full width) -->
+    <!-- Grande carte d'exploration (toute la largeur) -->
     <section class="vis-hero" data-vis="explore">
         <div class="vis-card vis-full">
             <div class="vis-header">
@@ -67,7 +71,7 @@
         </div>
     </section>
 
-    <!-- Per-drone belief maps (side by side) -->
+    <!-- Une carte par drone (côte à côte), centrée sur la portée de son lidar -->
     <section class="vis-drone-maps" data-vis="explore">
         <div class="vis-card vis-drone-panel" id="panelDrone0">
             <div class="vis-header">
@@ -101,7 +105,7 @@
         </div>
     </section>
 
-    <!-- Visual gauges row: progress circle + altitude meters + speed -->
+    <!-- Rangée de jauges : progression, altitudes, vitesses, distances entre drones -->
     <section class="vis-gauges" data-vis="explore">
         <div class="vis-card vis-gauge-card">
             <div class="vis-header"><h3>📊 Progression</h3></div>
@@ -129,7 +133,7 @@
         </div>
     </section>
 
-    <!-- Event timeline (compact, visual) -->
+    <!-- Journal des événements d'exploration, avec filtres par type -->
     <section class="vis-events-section" data-vis="explore">
         <div class="vis-card vis-full">
             <div class="vis-header">
@@ -148,7 +152,8 @@
         </div>
     </section>
 
-    <!-- KPI CARDS ROW (existing) -->
+    <!-- ═══ ONGLETS RÉSEAU (Comparaison, WiFi, 5G) ═══ -->
+    <!-- Cartes chiffrées : drones, RSSI (puissance reçue) et latence moyens, nombre de ticks -->
     <section class="kpi-row" data-vis="both wifi 5g">
         <div class="kpi-card" id="kpiDrones" data-vis="both wifi 5g">
             <div class="kpi-icon wifi">
@@ -206,7 +211,7 @@
         </div>
     </section>
 
-    <!-- CHARTS ROW 1 -->
+    <!-- Courbes dans le temps : RSSI et latence -->
     <section class="charts-row" data-vis="both wifi 5g">
         <div class="chart-card wide">
             <div class="chart-header">
@@ -228,7 +233,7 @@
         </div>
     </section>
 
-    <!-- DRONE MAP + PAIR TABLE -->
+    <!-- Carte 2D des positions + tableaux par paire (WiFi) et par drone (5G) -->
     <section class="charts-row" data-vis="both wifi 5g">
         <div class="chart-card" data-vis="both wifi 5g">
             <div class="chart-header">
@@ -269,7 +274,7 @@
         </div>
     </section>
 
-    <!-- CHARTS ROW 2 — Comparison bar charts -->
+    <!-- Barres de comparaison WiFi / 5G (RSSI, latence) et distances entre paires -->
     <section class="charts-row" data-vis="both">
         <div class="chart-card" data-vis="both">
             <div class="chart-header">
@@ -297,7 +302,7 @@
         </div>
     </section>
 
-    <!-- LOG -->
+    <!-- Journal de la page (visible dans tous les onglets) -->
     <section class="log-section">
         <div class="chart-card full">
             <div class="chart-header">

@@ -1,4 +1,9 @@
 #!/bin/bash
+# Installation, étape 2/5 : ajoute le dépôt apt officiel d'OSRF et installe le simulateur
+# Gazebo Harmonic (paquet gz-harmonic), puis vérifie que `gz sim` répond.
+# Gazebo sert à la première phase du projet (scripts/06_launch_multi_drones.sh).
+#   bash scripts/installation/02_install_gazebo.sh
+# Arrête le script à la première commande en échec
 set -e
 
 echo "=============================================="

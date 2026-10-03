@@ -1,4 +1,8 @@
-"""Smoke-test de l'arène multi-drone (3 drones, IPPO) : tout se construit et tourne."""
+"""Test rapide (« smoke test » : tout démarre-t-il ?) de l'arène à 3 drones SwarmQREnv, sous actions aléatoires.
+
+Réussi si l'observation fait 1820 valeurs par drone, l'état global 5440, les récompenses sont finies et chaque drone a bougé de plus de 0,1 m.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/tests/test_swarm.py --headless
+"""
 
 import argparse
 
@@ -21,6 +25,7 @@ from rl_inventory.env import AGENTS, NUM_DRONES, OBS_DIM, STATE_DIM, SwarmQREnv,
 
 
 def main():
+    """Fait --steps pas d'actions aléatoires, puis vérifie tailles d'observation et d'état, récompenses et déplacement des 3 drones."""
     cfg = SwarmQREnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = SwarmQREnv(cfg)
@@ -28,6 +33,7 @@ def main():
     start = [env._drones[k].data.root_pos_w.clone() for k in range(NUM_DRONES)]
 
     def rand_actions():
+        """Renvoie des actions aléatoires uniformes dans [-1, 1] pour les 3 drones."""
         return {a: torch.empty((env.num_envs, 4), device=env.device).uniform_(-1.0, 1.0) for a in AGENTS}
 
     rew = term = None

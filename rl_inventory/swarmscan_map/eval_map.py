@@ -1,24 +1,20 @@
-"""Mesure un checkpoint SwarmScan-Map à plusieurs niveaux de bruit σ (0 = politique déterministe).
+"""Mesure un modèle SwarmScan-Map à plusieurs niveaux de bruit σ (0 = politique déterministe, sans bruit).
 
-Répond à LA question du transfert : à quel bruit la politique lit-elle le mieux en conditions
-NOMINALES (le gate calibré, la vraie tâche) ? Les runs frontaux ont montré un optimum vers
-σ ≈ 0,20-0,35 et un effondrement sous 0,15 ; ce script mesure la courbe sur le modèle latéral.
-
-Biais corrigés (chacun faussait une mesure précédente) :
-  - terminaison anticipée sur mission : désactivée, sinon seuls les entrepôts les plus rapides
-    sont comptés et le score du mode bruité est le seuil de mission, pas une performance ;
-  - _ensure_qr forcé avant le premier reset, sinon les configurations et les spawns dirigés ne
-    sont pas tirés à la première vague (tous les entrepôts partaient de la pose par défaut) ;
-  - le bruit des actions est tiré d'un générateur DÉDIÉ : le générateur global n'est pas
-    consommé, donc tous les modes voient exactement les mêmes entrepôts et les mêmes spawns.
-
+Question : avec quel bruit la politique lit-elle le mieux à la règle NOMINALE (la vraie tâche) ?
+Résultats affichés à l'écran sous forme de tableau. Depuis la racine du projet :
   bash rl_inventory/launch.sh rl_inventory/swarmscan_map/eval_map.py --headless \
        --checkpoint swarmscan_runs/<run>/model_XXXX.pt --level 7 --sigmas 0,0.20,0.32,0.42
 """
 
+# Contexte : avec la caméra frontale, la lecture était la meilleure vers σ ≈ 0,20-0,35 et
+# s'effondrait sous 0,15 ; ce script mesure la même courbe pour le modèle à caméras latérales.
+# Trois biais de mesure, qui faussaient chacun une mesure précédente, sont corrigés plus bas
+# (commentaires « biais 1 », « biais 2 », « biais 3 »).
+
 import argparse
 import os
 
+# limite la fragmentation de la mémoire GPU (à poser avant que torch n'utilise le GPU)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from isaaclab.app import AppLauncher
@@ -34,12 +30,14 @@ parser.add_argument("--spawn_help", type=int, default=1, help="1 : spawns dirig�
 parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# Isaac Sim doit démarrer AVANT d'importer les modules isaaclab et le reste du projet
 simulation_app = AppLauncher(args).app
 
 import sys
 
 import torch
 
+# racine du projet ajoutée au chemin : le script se lance depuis n'importe quel dossier
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from rl_inventory.swarmscan_map.config_map import MAP_CFG
@@ -47,11 +45,13 @@ from rl_inventory.swarmscan_map.env_map import SwarmScanMapEnv, SwarmScanMapEnvC
 from rl_inventory.swarmscan_map.flatten_wrapper import SwarmMapVecEnv
 from rl_inventory.swarmscan_map.models import MapActorCritic
 
-N_SCALES = len(MAP_CFG.map.crop_spans_m)
+N_SCALES = len(MAP_CFG.map.crop_spans_m)  # nombre d'échelles de carte (2)
+# groupes d'observation : l'acteur (policy) et le critique, comme à l'entraînement
 OBS_GROUPS = {"policy": ["maps", "vector"], "critic": ["maps", "vector", "privileged"]}
 
 
 def build_policy(obs, num_actions, device):
+    """Recrée le réseau et charge les poids du modèle ; renvoie (politique, σ moyen enregistré dans le modèle)."""
     policy = MapActorCritic(
         obs, OBS_GROUPS, num_actions,
         map_channels=N_SCALES * MAP_CFG.map.n_channels, map_px=MAP_CFG.map.crop_px,
@@ -64,10 +64,13 @@ def build_policy(obs, num_actions, device):
 
 
 def run_sigma(vec, env, policy, sigma: float, horizon: int) -> dict:
-    """Une ou plusieurs vagues d'épisodes COMPLETS ; σ=0 → actions = moyenne de la politique."""
+    """Joue `--waves` vagues d'épisodes COMPLETS avec le bruit σ (0 : actions = moyenne) ;
+    renvoie les fractions lues (règle évaluée et règle nominale), la récompense et le nombre d'épisodes."""
     tag = "det" if sigma == 0 else f"σ={sigma:.2f}"
-    torch.manual_seed(args.seed)                 # mêmes entrepôts et mêmes spawns à chaque σ
-    gen = torch.Generator(device=env.device)     # bruit tiré à part : le tirage global reste intact
+    torch.manual_seed(args.seed)                 # mêmes entrepôts et mêmes départs à chaque σ
+    # biais 3 : le bruit des actions vient d'un générateur À PART ; le générateur global n'est
+    # pas consommé, donc chaque σ voit exactement les mêmes entrepôts et les mêmes départs
+    gen = torch.Generator(device=env.device)
     gen.manual_seed(args.seed)
     policy.std.data.fill_(max(sigma, 1e-6))
     vec.reset()
@@ -85,7 +88,7 @@ def run_sigma(vec, env, policy, sigma: float, horizon: int) -> dict:
         _, rew, _, infos = vec.step(act)
         total += rew
         steps += 1
-        if "log" in infos:
+        if "log" in infos:     # fin de vague : tous les entrepôts finissent ensemble (pas de fin anticipée)
             gates.append(infos["log"]["episode/read_frac_gate"])
             noms.append(infos["log"]["episode/read_frac_nominal"])
             rews.append(total.mean().item())
@@ -100,6 +103,7 @@ def run_sigma(vec, env, policy, sigma: float, horizon: int) -> dict:
 
 
 def main():
+    """Fige le niveau évalué, mesure chaque σ demandé et affiche le tableau « lecture en fonction du bruit »."""
     torch.manual_seed(args.seed)
     cfg = SwarmScanMapEnvCfg()
     cfg.scene.num_envs = args.num_envs
@@ -111,12 +115,17 @@ def main():
     env._curr.cfg.min_episodes_per_notch = 10**9        # gate figé
     env._curr.cfg.min_episodes_down = 10**9
     if not args.spawn_help:
-        env._curr.cfg.spawn_near_prob = (0.0, 0.0)
+        env._curr.cfg.spawn_near_prob = (0.0, 0.0)      # aucun départ aidé près d'un QR
+    # biais 1 : fin anticipée désactivée (objectif 2,0 inatteignable), entrepôts synchronisés.
+    # Sinon seuls les entrepôts les plus rapides étaient comptés, et le score mesuré n'était
+    # que le seuil de mission, pas une performance.
     MAP_CFG.train.mission_target = 2.0                  # pas de fin anticipée : envs synchronisés
     env._split = args.split
     vec = SwarmMapVecEnv(env)
 
     obs = vec.get_observations()
+    # biais 2 : lecture des QR forcée avant le premier reset des mesures ; sinon, à la première
+    # vague, ni configurations ni départs aidés n'étaient tirés (tous partaient de la pose par défaut)
     env._ensure_qr()                                    # _qr_ready avant le 1er reset des mesures
     policy, std_ckpt = build_policy(obs, vec.num_actions, env.device)
     horizon = int(env.max_episode_length)
@@ -138,7 +147,7 @@ def main():
     for s, r in res.items():
         label = "0 (det)" if s == 0 else f"{s:.2f}"
         print(f"{label:>8}{r['episodes']:>10}{r['gate']:>12.3f}{r['nominal']:>15.3f}{r['reward']:>13.1f}")
-    best = max(res.items(), key=lambda kv: kv[1]["nominal"])
+    best = max(res.items(), key=lambda kv: kv[1]["nominal"])   # σ qui lit le plus à la règle nominale
     print(f"\nmeilleur σ pour la tâche NOMINALE : {best[0]:.2f} → {best[1]['nominal']:.3f}")
     print("========================================================\n")
     vec.close()

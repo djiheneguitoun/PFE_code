@@ -1,11 +1,8 @@
-"""Test de viabilité option B : Isaac Sim 5.1 + Isaac Lab 2.3 + MultiMeshRayCaster.
+"""Test de faisabilité de l'« option B » : Isaac Sim 5.1 + Isaac Lab 2.3 + capteur MultiMeshRayCaster sur cette machine.
 
-Confirme que : (1) Isaac Sim 5.1 démarre sur le driver 535, (2) MultiMeshRayCaster
-est importable, (3) torch voit le GPU. Ne modifie rien.
-
-Lancement (depuis le NOUVEAU venv) :
-  ~/isaac5_env/bin/python ~/simulation_mc02/rl_inventory/test_isaac5.py \
-      --headless --enable_cameras --kit_args="--/rtx/verifyDriverVersion/enabled=false"
+Vérifie que (1) Isaac Sim 5.1 démarre avec le pilote NVIDIA 535, (2) MultiMeshRayCaster s'importe, (3) torch voit le GPU. Ne modifie rien.
+Lancement depuis la racine, avec le nouvel environnement ~/isaac5_env :
+  ~/isaac5_env/bin/python rl_inventory/diag/test_isaac5.py --headless --enable_cameras --kit_args="--/rtx/verifyDriverVersion/enabled=false"
 """
 
 import argparse

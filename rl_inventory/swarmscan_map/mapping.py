@@ -1,7 +1,7 @@
-"""Mémoire spatiale de l'essaim : grilles globales par env + crops égocentriques multi-échelles.
+"""Mémoire spatiale de l'essaim : grilles partagées par entrepôt et vues centrées sur chaque drone.
 
-Pur torch (aucune dépendance Isaac) : tout est testable sans simulateur.
-Les grilles ne contiennent QUE ce que les capteurs ont vu — jamais de position de QR non lu.
+Les grilles ne contiennent QUE ce que les capteurs ont vu, jamais la position d'un QR non lu.
+Pur torch (sans Isaac), testé par rl_inventory/tests/test_swarmscan_map_pure.py ; utilisé par env_map.py.
 """
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from .config_map import MapConfig
 
 
 class SwarmMapper:
-    """Grilles partagées par l'essaim (comm parfaite) : occupation, exploré, scan par bande,
-    QR lus, trajectoires par drone — et leur découpe égocentrique pour l'observation."""
+    """Grilles communes à l'essaim (communication parfaite) : obstacles, exploré, couverture, QR lus, traces."""
 
     def __init__(self, cfg: MapConfig, num_envs: int, num_drones: int, device: torch.device | str):
+        """Crée les grilles vides (une série par entrepôt) et les coordonnées du centre de chaque case."""
         self.cfg = cfg
         self.B, self.D = num_envs, num_drones
         self.device = torch.device(device)
@@ -32,14 +32,15 @@ class SwarmMapper:
         self.cell_y = ys.view(1, self.H, 1).expand(1, self.H, self.W)
 
         nb = cfg.n_bands
-        self.occ = torch.zeros(self.B, self.H, self.W, device=self.device)
-        self.explored = torch.zeros(self.B, self.H, self.W, device=self.device)
-        self.scan = torch.zeros(self.B, nb, self.H, self.W, device=self.device)
-        self.qr_read = torch.zeros(self.B, self.H, self.W, device=self.device)
-        self.traj = torch.zeros(self.B, self.D, self.H, self.W, device=self.device)
+        self.occ = torch.zeros(self.B, self.H, self.W, device=self.device)          # obstacles vus par le lidar
+        self.explored = torch.zeros(self.B, self.H, self.W, device=self.device)     # zone déjà approchée
+        self.scan = torch.zeros(self.B, nb, self.H, self.W, device=self.device)     # couverture caméra par tranche de hauteur
+        self.qr_read = torch.zeros(self.B, self.H, self.W, device=self.device)      # emplacements des QR déjà lus
+        self.traj = torch.zeros(self.B, self.D, self.H, self.W, device=self.device)  # trace récente de chaque drone
         self._band_edges = torch.tensor(cfg.height_bands_m, device=self.device)
 
     def reset(self, env_ids: torch.Tensor):
+        """Efface toutes les grilles des entrepôts `env_ids` (début d'épisode)."""
         self.occ[env_ids] = 0.0
         self.explored[env_ids] = 0.0
         self.scan[env_ids] = 0.0
@@ -47,6 +48,7 @@ class SwarmMapper:
         self.traj[env_ids] = 0.0
 
     def _cell_idx(self, x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Renvoie les indices de case (gx, gy) des points (x, y) en m, et un masque « dans la grille »."""
         gx = ((x - self.x0) / self.cfg.cell_m).long().clamp(0, self.W - 1)
         gy = ((y - self.y0) / self.cfg.cell_m).long().clamp(0, self.H - 1)
         inside = (x >= self.x0) & (x < self.x1) & (y >= self.y0) & (y < self.y1)
@@ -54,20 +56,20 @@ class SwarmMapper:
 
     def update(
         self,
-        pos: torch.Tensor,        # (B,D,3) positions locales env
-        yaw: torch.Tensor,        # (B,D)
-        hits: torch.Tensor,       # (B,D,R,3) impacts lidar locaux env
-        hit_valid: torch.Tensor,  # (B,D,R) impact réel (< portée max)
-        scan_ok: torch.Tensor,    # (B,D) gate vitesse/lacet satisfait
-        scan_range: float,
-        fov_deg: float,
-        alive: torch.Tensor,      # (B,D)
+        pos: torch.Tensor,        # (B,D,3) positions en m, repère de l'entrepôt
+        yaw: torch.Tensor,        # (B,D) cap en radians
+        hits: torch.Tensor,       # (B,D,R,3) points d'impact du lidar, repère de l'entrepôt
+        hit_valid: torch.Tensor,  # (B,D,R) vrai si le rayon a touché quelque chose (< portée max)
+        scan_ok: torch.Tensor,    # (B,D) vrai si le drone est assez lent (vitesse et rotation)
+        scan_range: float,        # m : portée de l'empreinte de couverture
+        fov_deg: float,           # degrés : demi-angle du cône de chaque caméra
+        alive: torch.Tensor,      # (B,D) vrai si le drone n'est pas en panne
     ) -> dict[str, torch.Tensor]:
-        """Met à jour toutes les grilles ; renvoie les comptes de cellules pour la récompense."""
+        """Met à jour les grilles après un pas ; renvoie par drone les cases neuves, de façade, marginales et en recouvrement."""
         B, D = self.B, self.D
         alive_f = alive.float()
 
-        # trajectoires (décroissance exponentielle + tampon de position)
+        # traces : l'ancienne s'efface peu à peu (×0,98 par pas), la case actuelle passe à 1
         self.traj *= self.cfg.traj_decay
         gx, gy, _ = self._cell_idx(pos[..., 0], pos[..., 1])
         bd = torch.arange(B, device=self.device).view(B, 1).expand(B, D)
@@ -92,7 +94,8 @@ class SwarmMapper:
             disk = ((dx * dx + dy * dy) <= r2) & alive[:, k].view(B, 1, 1)
             self.explored = torch.maximum(self.explored, disk.float())
 
-        # empreinte de scan : cône caméra × portée × gate vitesse, dans la bande d'altitude du drone
+        # empreinte de couverture : cônes des caméras × portée × drone assez lent, dans la tranche
+        # de hauteur du drone ; occ_dil = obstacles élargis d'une case (pour repérer les façades)
         occ_dil = F.max_pool2d(self.occ.unsqueeze(1), 3, stride=1, padding=1).squeeze(1)
         band = (torch.bucketize(pos[..., 2].contiguous(), self._band_edges) - 1).clamp(0, self.cfg.n_bands - 1)
         cos_half = math.cos(math.radians(fov_deg))
@@ -102,8 +105,8 @@ class SwarmMapper:
             dy = self.cell_y - pos[:, k, 1].view(B, 1, 1)
             dist = torch.sqrt(dx * dx + dy * dy).clamp_min(1e-6)
             c, s = torch.cos(yaw[:, k]).view(B, 1, 1), torch.sin(yaw[:, k]).view(B, 1, 1)
-            # empreinte BILATÉRALE (caméras latérales ±90°) : projection sur l'axe gauche (−sin, cos),
-            # les deux cônes dos à dos se testent en |valeur absolue|
+            # empreinte des DEUX côtés (caméras latérales à ±90°) : projection sur l'axe gauche
+            # (−sin, cos) ; les deux cônes dos à dos se testent d'un coup en valeur absolue
             in_cone = ((dx * (-s) + dy * c) / dist).abs() >= cos_half
             ok = (scan_ok[:, k] & alive[:, k]).view(B, 1, 1)
             stamp = (dist <= scan_range) & in_cone & ok
@@ -111,8 +114,10 @@ class SwarmMapper:
             new = stamp & (prev < 0.5)
             stamps.append(stamp)
             news.append(new)
-            facades.append(new & (occ_dil > 0.5))
+            facades.append(new & (occ_dil > 0.5))    # case neuve collée à un obstacle = façade de rack
 
+        # comptes par drone : cases neuves, de façade, marginales (neuves que LUI SEUL a couvertes
+        # à ce pas) et en recouvrement avec un coéquipier
         union_new = torch.zeros(B, self.H, self.W, dtype=torch.bool, device=self.device)
         counts = {
             "new": torch.zeros(B, D, device=self.device),
@@ -128,10 +133,10 @@ class SwarmMapper:
             counts["new"][:, k] = news[k].flatten(1).sum(-1).float()
             counts["facade"][:, k] = facades[k].flatten(1).sum(-1).float()
             counts["marginal"][:, k] = (news[k] & ~others).flatten(1).sum(-1).float()
-            # recouvrement avec les AUTRES drones seulement : comparée à la grille, qui
-            # contient déjà l'empreinte du pas précédent DU MÊME drone, la taxe valait
-            # ~105 cellules à chaque pas (−225 par drone et par épisode) — une taxe
-            # constante d'être vivant, qui rendait mourir rentable
+            # recouvrement compté avec les AUTRES drones seulement. Comparé à la grille (qui contient
+            # déjà l'empreinte du pas précédent du même drone), il valait ~105 cases à chaque pas
+            # (−225 par drone et par épisode) : une taxe permanente pour rester en vol, qui rendait
+            # la panne rentable
             others_stamp = torch.zeros_like(union_new)
             for j in range(D):
                 if j != k:
@@ -148,7 +153,7 @@ class SwarmMapper:
         return counts
 
     def mark_read(self, env_idx: torch.Tensor, xy: torch.Tensor):
-        """Mémorise l'emplacement des QR lus (connaissance acquise à la lecture)."""
+        """Marque sur la grille les QR qui viennent d'être lus (position connue seulement après lecture)."""
         if env_idx.numel() == 0:
             return
         gx, gy, ins = self._cell_idx(xy[:, 0], xy[:, 1])
@@ -156,13 +161,13 @@ class SwarmMapper:
         self.qr_read.view(-1).index_fill_(0, flat, 1.0)
 
     def frontier(self) -> torch.Tensor:
-        """Bord connu/inconnu de la zone explorée."""
+        """Renvoie la frontière : cases explorées qui touchent une case encore inexplorée (1 ou 0)."""
         unexplored = 1.0 - self.explored
         near_unknown = F.max_pool2d(unexplored.unsqueeze(1), 3, stride=1, padding=1).squeeze(1)
         return ((self.explored > 0.5) & (near_unknown > 0.5)).float()
 
     def ego_maps(self, pos: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
-        """Crops égocentriques multi-échelles (B, D, S*C*P*P), drone au centre, avant vers le haut."""
+        """Renvoie les vues de chaque drone (2 échelles, lui au centre, avant en haut), aplaties : (B, D, 2·9·32·32)."""
         B, D, P = self.B, self.D, self.cfg.crop_px
         common = torch.cat(
             [
@@ -174,7 +179,7 @@ class SwarmMapper:
             ],
             dim=1,
         )                                                     # (B, 3+nb, H, W)
-        mates = self.traj.sum(dim=1, keepdim=True) - self.traj  # (B,D,H,W)
+        mates = self.traj.sum(dim=1, keepdim=True) - self.traj  # (B,D,H,W) traces des coéquipiers = toutes − la sienne
         full = torch.cat(
             [
                 common.unsqueeze(1).expand(B, D, common.shape[1], self.H, self.W),
@@ -192,6 +197,8 @@ class SwarmMapper:
         u = (-lin).view(1, P, 1)                                              # avant en haut du crop
         v = lin.view(1, 1, P)                                                 # droite vers la droite
         crops = []
+        # pour chaque échelle : position dans l'entrepôt de chaque pixel de la vue (tournée selon
+        # le cap), ramenée dans [−1, 1] pour que grid_sample lise la grille par interpolation
         for span in self.cfg.crop_spans_m:
             wx = px + span * (u * c + v * s)
             wy = py + span * (u * s - v * c)

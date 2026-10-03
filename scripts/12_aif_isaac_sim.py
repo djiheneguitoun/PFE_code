@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Simulation AIF dans Isaac Sim : des drones Iris (Pegasus + ArduPilot SITL, le pilote automatique simulé sur le PC)
+explorent un entrepôt avec leur lidar, en choisissant leurs mouvements par inférence active (aif_core).
+Chaque pas de décision est suivi de 60 pas physiques de vol ; arrêt à 93 % de couverture, sur un plateau ou après
+--max-steps. Sorties : /tmp/aif_*.json en direct, puis logs/runs/run_<date>_<tag>/ à la fin.
+Lancement : bash scripts/12_launch_aif_isaac_sim.sh 3 --arch centralized (options : voir parse_args).
+"""
 
 from __future__ import annotations
 
@@ -12,8 +18,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+# Affiche chaque ligne tout de suite (journal lisible en direct)
 sys.stdout.reconfigure(line_buffering=True)
 
+# Rend importables aif_core, qr_code_system et run_artifacts (dossier scripts/)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aif_core.agent import DroneAgent
@@ -22,11 +30,13 @@ from aif_core.loggers import DataLogger, DiagnosticLogger
 from aif_core.swarm import SwarmCoordinator
 
 
+# Classes de Pegasus et scipy, importées seulement après le démarrage d'Isaac Sim
 _Backend = None
 _Rotation = None
 
 
 def _ensure_pegasus_imports():
+    """Importe Backend (Pegasus) et Rotation (scipy) une seule fois, après le démarrage d'Isaac Sim."""
     global _Backend, _Rotation
     if _Backend is None:
         from pegasus.simulator.logic.backends.backend import Backend
@@ -34,16 +44,20 @@ def _ensure_pegasus_imports():
         _Backend, _Rotation = Backend, Rotation
 
 
+# Classe créée par _create_state_tracker_class() (elle hérite d'une classe Pegasus)
 AifStateTracker = None
 
 
 def _create_state_tracker_class():
+    """Crée la classe AifStateTracker : elle hérite de Backend, importable seulement une fois Isaac Sim lancé."""
     global AifStateTracker
     _ensure_pegasus_imports()
 
     class _AifStateTracker(_Backend):
+        """« Backend » Pegasus passif : il ne pilote pas, il recopie seulement la pose du drone (position, vitesse, orientation)."""
 
         def __init__(self, drone_id: int):
+            """Crée le suivi du drone n° drone_id, au repos à l'origine tant qu'aucun état n'est reçu."""
             self.drone_id = drone_id
             self.p = np.zeros(3)
             self.v = np.zeros(3)
@@ -53,42 +67,64 @@ def _create_state_tracker_class():
             self._vehicle = None
 
         def get_position(self) -> np.ndarray:
+            """Renvoie une copie de la position monde (x, y, z) en m."""
             return self.p.copy()
 
         def get_position_xy(self) -> Tuple[float, float]:
+            """Renvoie la position monde (x, y) en m."""
             return float(self.p[0]), float(self.p[1])
 
         def get_yaw(self) -> float:
+            """Renvoie le cap du drone (rad), tiré de sa matrice d'orientation ; 0 avant le premier état reçu."""
             if not self.received_first_state:
                 return 0.0
             return float(math.atan2(self.R[1, 0], self.R[0, 0]))
 
         @property
         def vehicle(self):
+            """Renvoie le véhicule Pegasus associé (None avant initialize)."""
             return self._vehicle
 
         def initialize(self, vehicle):
+            """Mémorise le véhicule Pegasus (appelé par Pegasus à la création du drone)."""
             self._vehicle = vehicle
 
         def update_state(self, state):
+            """Recopie la pose envoyée par Pegasus à chaque pas physique (position, vitesse, orientation, rotation)."""
             self.p = np.array(state.position)
             self.v = np.array(state.linear_velocity)
             self.R = _Rotation.from_quat(state.attitude).as_matrix()
             self.w = np.array(state.angular_velocity)
             self.received_first_state = True
 
-        def update_sensor(self, sensor_type, data): pass
-        def update_graphical_sensor(self, sensor_type, data): pass
-        def input_reference(self): return [0.0, 0.0, 0.0, 0.0]
-        def update(self, dt): pass
-        def start(self): pass
-        def stop(self): pass
-        def reset(self): self.received_first_state = False
+        def update_sensor(self, sensor_type, data):
+            """Ne traite pas les mesures des capteurs : ce suivi ne lit que la pose du drone."""
+            pass
+        def update_graphical_sensor(self, sensor_type, data):
+            """Ignore les capteurs graphiques (caméras)."""
+            pass
+        def input_reference(self):
+            """Renvoie des commandes moteur nulles : ce suivi ne pilote pas, c'est ArduPilot qui pilote le drone."""
+            return [0.0, 0.0, 0.0, 0.0]
+        def update(self, dt):
+            """Ne fait rien (rien à calculer à chaque pas)."""
+            pass
+        def start(self):
+            """Ne fait rien au démarrage de la simulation."""
+            pass
+        def stop(self):
+            """Ne fait rien à l'arrêt de la simulation."""
+            pass
+        def reset(self):
+            """Oublie la pose reçue (remise à zéro de la simulation)."""
+            self.received_first_state = False
 
     AifStateTracker = _AifStateTracker
 
 
 def _patch_sitl_defaults():
+    """Corrige le fichier de paramètres ArduPilot gazebo-iris.parm (contrôles d'armement et sécurités coupés,
+    boucle à 50 Hz) pour que les drones simulés acceptent de décoller ; modifie ce fichier sur place."""
     parm_file = os.path.expanduser(
         "~/ardupilot/Tools/autotest/default_params/gazebo-iris.parm"
     )
@@ -138,12 +174,14 @@ def _patch_sitl_defaults():
 
 
 class SitlController:
+    """Pilote d'un drone par MAVLink (protocole de commande d'ArduPilot) : mode GUIDED, armement, décollage, points de passage."""
 
-    GUIDED_MODE = 4
-    POS_YAW_MASK = 0b0000_1011_1111_1000
+    GUIDED_MODE = 4                         # numéro du mode GUIDED d'ArduCopter (le drone suit les points envoyés)
+    POS_YAW_MASK = 0b0000_1011_1111_1000    # masque MAVLink : seuls la position et le cap sont pris en compte
 
     def __init__(self, drone_id: int, mavlink_backend, state_tracker,
                  spawn_pos: np.ndarray, cfg: SimConfig):
+        """Relie le pilote au backend MAVLink et au suivi d'état du drone ; spawn_pos = point de départ (m monde)."""
         self.drone_id = drone_id
         self._mav = mavlink_backend
         self._tracker = state_tracker
@@ -156,9 +194,11 @@ class SitlController:
         self._cmd_count = 0
 
     def _conn(self):
+        """Renvoie la connexion MAVLink du backend Pegasus (None si elle n'est pas encore ouverte)."""
         return self._mav._connection
 
     def _drain(self):
+        """Vide les messages MAVLink en attente sur la connexion."""
         conn = self._conn()
         if conn is None:
             return
@@ -166,6 +206,7 @@ class SitlController:
             pass
 
     def set_guided(self):
+        """Passe le drone en mode GUIDED, où il suit les points envoyés par le script (système MAVLink n° id + 1)."""
         from pymavlink import mavutil as _mav
         conn = self._conn()
         if conn is None:
@@ -179,6 +220,7 @@ class SitlController:
         )
 
     def force_arm(self):
+        """Arme les moteurs de force (code 21196 : armer même si les contrôles avant vol échouent)."""
         from pymavlink import mavutil as _mav
         conn = self._conn()
         if conn is None:
@@ -194,11 +236,13 @@ class SitlController:
         self._armed = True
 
     def is_flying(self, min_alt: float = 0.5) -> bool:
+        """Vérifie que le drone est plus haut que min_alt (m)."""
         if not self._tracker.received_first_state:
             return False
         return float(self._tracker.get_position()[2]) > min_alt
 
     def takeoff(self, altitude: float):
+        """Demande le décollage jusqu'à l'altitude donnée (m)."""
         from pymavlink import mavutil as _mav
         conn = self._conn()
         if conn is None:
@@ -210,6 +254,8 @@ class SitlController:
         )
 
     def send_backup_params(self):
+        """Renvoie par MAVLink les paramètres clés (ARMING_CHECK 0, SCHED_LOOP_RATE 50, FS_THR_ENABLE 0), au cas où le
+        fichier .parm n'aurait pas été pris en compte."""
         from pymavlink import mavutil as _mav
         conn = self._conn()
         if conn is None:
@@ -225,6 +271,8 @@ class SitlController:
             )
 
     def set_target(self, x: float, y: float, z: float, yaw: float = 0.0):
+        """Envoie un point de passage (m, repère monde d'Isaac Sim), converti dans le repère NED d'ArduPilot
+        (nord = y, est = x, bas = -z, compté depuis le point de départ)."""
         from pymavlink import mavutil as _mav
         self.target = np.array([x, y, z])
         self.target_yaw = yaw
@@ -234,6 +282,7 @@ class SitlController:
         if conn is None:
             return
 
+        # Conversion repère Isaac (x est, y nord, z haut) → NED local d'ArduPilot, relatif au point de départ
         ned_n = y - self._spawn[1]
         ned_e = x - self._spawn[0]
         ned_d = -(z - self._spawn[2])
@@ -256,23 +305,29 @@ class SitlController:
                   f"ned=({ned_n:.1f},{ned_e:.1f},{ned_d:.1f})")
 
     def get_position(self) -> np.ndarray:
+        """Renvoie la position monde (x, y, z) en m, lue par le suivi d'état."""
         return self._tracker.get_position()
 
     def get_position_xy(self) -> Tuple[float, float]:
+        """Renvoie la position monde (x, y) en m."""
         return self._tracker.get_position_xy()
 
     def get_yaw(self) -> float:
+        """Renvoie le cap du drone (rad)."""
         return self._tracker.get_yaw()
 
     def is_at_target(self) -> bool:
+        """Vérifie que le drone est, à l'horizontale, à moins de waypoint_tol (0,3 m) de sa cible."""
         pos = self.get_position()
         self.arrived = np.linalg.norm(pos[:2] - self.target[:2]) < self.cfg.waypoint_tol
         return self.arrived
 
 
 class LidarReader:
+    """Lidar tournant PhysX monté sur un drone : lit les impacts, garde la distance horizontale, regroupe en 360 directions."""
 
     def __init__(self, drone_id: int, drone_prim_path: str, cfg: SimConfig):
+        """Crée le lidar sous le corps du drone (360° × 40°, de 0,15 à 8 m, 10 tours/s), avec affichage des points."""
         from isaacsim.sensors.physx import RotatingLidarPhysX
 
         self.prim_path = f"{drone_prim_path}/body/Lidar_{drone_id}"
@@ -302,11 +357,14 @@ class LidarReader:
         self._acc_hits:   List[np.ndarray] = []
 
     def initialize(self):
+        """Initialise le capteur (à appeler après world.reset())."""
         self.sensor.initialize()
         self.sensor.post_reset()
         print(f"[INFO] LiDAR initialized: {self.prim_path}")
 
     def _parse_frame(self) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Lit la mesure courante et renvoie (angles, distances horizontales, impact oui/non), ou None si elle est vide ;
+        les impacts sur le sol (moins de 0,25 m de haut) ne comptent pas."""
         frame = self.sensor.get_current_frame()
         depth = frame.get("linear_depth")
         azimuth = frame.get("azimuth")
@@ -322,6 +380,8 @@ class LidarReader:
             zenith = np.asarray(zenith, dtype=np.float64).ravel()
             if zenith.size > 0 and zenith.max() > 2 * math.pi + 0.1:
                 zenith = np.deg2rad(zenith)
+            # Deux conventions possibles : angle compté depuis l'horizontale (petites valeurs) ou depuis la verticale.
+            # La hauteur de l'impact est calculée à partir de l'altitude de vol (fly_altitude, 2 m).
             if zenith.size > 0 and np.median(zenith) < math.pi / 4:
                 cos_elev = np.cos(zenith)
                 sin_elev = np.sin(zenith)
@@ -342,6 +402,7 @@ class LidarReader:
         return azimuth, depth, hits
 
     def accumulate(self, yaw: float = 0.0):
+        """Ajoute la mesure courante au tampon, angles tournés du cap du drone (yaw, rad) pour être dans le repère monde."""
         parsed = self._parse_frame()
         if parsed is None:
             return
@@ -352,6 +413,8 @@ class LidarReader:
         self._acc_hits.append(hits)
 
     def get_accumulated(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Regroupe les mesures du tampon en 360 secteurs (impact le plus proche, sinon distance la plus grande),
+        vide le tampon et renvoie (angles, distances, impacts) ; sans mesure, renvoie « rien vu »."""
         if not self._acc_angles:
             n = self.cfg.num_rays
             return (
@@ -397,6 +460,7 @@ class LidarReader:
 
 
 def _import_ns3_bridge():
+    """Charge le module 12_ns3_bridge.py (son nom commence par un chiffre : import manuel) ; renvoie None s'il manque."""
     import importlib.util
     here = os.path.dirname(os.path.abspath(__file__))
     bridge_path = os.path.join(here, "12_ns3_bridge.py")
@@ -411,6 +475,7 @@ def _import_ns3_bridge():
 
 def _write_drone_positions(agents: List[DroneAgent],
                            path: str = "/tmp/drone_positions.csv"):
+    """Écrit la position monde (m) des drones actifs dans le CSV lu par ns-3 (avec ligne d'en-tête)."""
     try:
         with open(path, "w") as f:
             f.write("drone_id,x,y,z\n")
@@ -428,12 +493,14 @@ def _write_drone_positions(agents: List[DroneAgent],
 
 
 def parse_args() -> SimConfig:
+    """Lit les options de la ligne de commande et renvoie la configuration SimConfig correspondante."""
     p = argparse.ArgumentParser(description="Active Inference drones — Isaac Sim")
     p.add_argument("--num-drones", type=int, default=3)
     p.add_argument("--headless", action="store_true")
     p.add_argument("--max-steps", type=int, default=500)
     p.add_argument("--env-width", type=float, default=30.0)
     p.add_argument("--env-height", type=float, default=20.0)
+    # --env-width / --env-height : taille de la zone sans entrepôt chargé (avec l'entrepôt : sa taille + 1 m)
 
     p.add_argument("--planner", choices=["aif", "heuristic"], default="aif")
     p.add_argument("--arch", choices=["centralized", "distributed"], default="centralized")
@@ -476,6 +543,7 @@ def parse_args() -> SimConfig:
 
 
 def create_sim_app(cfg: SimConfig):
+    """Démarre Isaac Sim (fenêtre 1280 × 720, ou sans écran avec --headless) ; à faire avant tout import d'Isaac ou Pegasus."""
     from isaacsim import SimulationApp
     app_cfg = {
         "headless": cfg.headless,
@@ -488,6 +556,7 @@ def create_sim_app(cfg: SimConfig):
 
 
 def setup_world():
+    """Crée le monde Pegasus (sol, entrepôt, éclairage) et renvoie (monde, boîte de l'entrepôt en m monde)."""
     from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
     pif = PegasusInterface()
     pif.initialize_world()
@@ -499,6 +568,8 @@ def setup_world():
 
 
 def _load_factory_environment():
+    """Charge l'entrepôt USD (variable AIF_FACTORY_USD, sinon l'entrepôt d'exemple Isaac 4.2 en ligne) et renvoie sa boîte
+    englobante (x0, y0, x1, y1) en m monde ; arrête le programme si le fichier est inaccessible ou vide."""
     try:
         from isaacsim.core.utils.stage import add_reference_to_stage
     except ImportError:
@@ -537,6 +608,7 @@ def _load_factory_environment():
 
 
 def _add_scene_lighting():
+    """Ajoute une lumière d'ambiance (dôme) et un « soleil » incliné pour éclairer la scène et les caméras."""
     from pxr import Gf, UsdGeom, UsdLux
     import omni.usd
 
@@ -559,6 +631,7 @@ def _add_scene_lighting():
 
 
 def setup_viewport_camera(cfg: SimConfig):
+    """Place la caméra de la fenêtre en vue plongeante (25 m de haut, 18 m en recul) ; ne fait rien en mode headless."""
     if cfg.headless:
         return
 
@@ -610,6 +683,8 @@ def setup_viewport_camera(cfg: SimConfig):
 
 
 def create_physical_drones(agents: List[DroneAgent], cfg: SimConfig):
+    """Crée dans Isaac Sim un drone Iris par agent (ArduPilot SITL lancé automatiquement, baromètre, IMU, GPS, lidar)
+    et renvoie (drones Pegasus, pilotes SitlController)."""
     from pegasus.simulator.params import ROBOTS
     from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
     from pegasus.simulator.logic.sensors.barometer import Barometer
@@ -644,6 +719,7 @@ def create_physical_drones(agents: List[DroneAgent], cfg: SimConfig):
         tracker = AifStateTracker(agent.id)
 
         mc = MultirotorConfig()
+        # ArduPilot (premier backend) pilote les moteurs ; le suivi d'état ne fait que lire la pose
         mc.backends = [mav_backend, tracker]
         mc.sensors = [Barometer(), IMU(), GPS()]
 
@@ -669,6 +745,7 @@ def create_physical_drones(agents: List[DroneAgent], cfg: SimConfig):
 
 
 def inject_dynamic_obstacle(wx: float, wy: float):
+    """Fait apparaître un cube rouge de 3 × 3 × 4 m en (wx, wy) m monde, avec collision pour que le lidar le voie."""
     try:
         from pxr import Gf, UsdGeom, UsdPhysics, PhysxSchema
         import omni.usd
@@ -701,11 +778,14 @@ def inject_dynamic_obstacle(wx: float, wy: float):
 
 
 def main():
+    """Prépare la scène et les drones, les fait décoller, puis boucle « décision AIF + 60 pas physiques » jusqu'à
+    93 % de couverture, un plateau ou --max-steps ; enregistre ensuite les résultats du run."""
     cfg = parse_args()
 
     running = True
 
     def _sig(sig, frame):
+        """Demande l'arrêt propre de la boucle principale (Ctrl+C ou signal d'arrêt)."""
         nonlocal running
         running = False
 
@@ -731,6 +811,7 @@ def main():
 
     world, factory_bounds = setup_world()
 
+    # La zone devient la boîte de l'entrepôt + 1 m de marge de chaque côté, arrondie à la case (0,5 m)
     if factory_bounds:
         margin = 1.0
         bx0, by0, bx1, by1 = factory_bounds
@@ -748,6 +829,7 @@ def main():
     setup_viewport_camera(cfg)
     obstacles: List[Dict] = []
 
+    # Départ (repère local) : drones alignés tous les 5 m autour du milieu en X, à y = max(8 m, 20 % de la hauteur)
     agents: List[DroneAgent] = []
     for i in range(cfg.num_drones):
         gx = cfg.env_width / 2 + (i - (cfg.num_drones - 1) / 2) * cfg.drone_spacing
@@ -755,6 +837,7 @@ def main():
         agents.append(DroneAgent(i, gx, gy, cfg))
 
     if ns3_bridge is not None:
+        # Premier fichier de positions (points de départ, z = 2 m), écrit avant le lancement de ns-3
         _write_drone_positions(agents)
         ns3_bridge.launch_ns3(
             n_drones=cfg.num_drones,
@@ -770,6 +853,8 @@ def main():
     coordinator.inject_obstacle_fn = inject_dynamic_obstacle
     logger = DataLogger(cfg.output_dir)
 
+    # Lecture de QR : un seul panneau (2,5 m) en (0, -5, 2) m monde ; image des caméras des drones tous les 5 pas
+    # physiques, décodée dans un fil d'exécution séparé
     from qr_code_system import setup_qr_system, initialize_cameras
     qr_data = os.getenv("QR_CODE_DATA", "DRONE_WAREHOUSE_INSPECTION_001")
     qr_panel_pos = (0.0, -5.0, 2.0)
@@ -826,6 +911,7 @@ def main():
 
     print(f"[INFO] Phase 3/3 : attente altitude ({cfg.fly_altitude:.1f} m)…")
     drone_flying = [False] * len(controllers)
+    # Pas physiques où un drone encore au sol est réarmé et relancé
     RETRY_TICKS = (500, 1000, 1500, 2000, 2500)
 
     for tick in range(3000):
@@ -871,12 +957,12 @@ def main():
 
     aif_step = 0
     plateau_counter = 0
-    plateau_threshold = 0.1
-    plateau_patience = 15
+    plateau_threshold = 0.1   # points de % : gain de couverture minimal par pas
+    plateau_patience = 15     # pas d'affilée sous ce gain avant d'arrêter (plateau)
     prev_coverage = 0.0
 
     while running and aif_step < cfg.max_steps and sim_app.is_running():
-        # perception, fusion, planning, exécution
+        # perception, fusion, planification, exécution
         coordinator.step()
 
         # vol physique : N ticks pendant que les drones se déplacent

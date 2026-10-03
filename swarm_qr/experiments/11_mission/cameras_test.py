@@ -1,8 +1,7 @@
-"""Étalonnage des caméras fixes : on place des caméras à des orientations connues, on rend, on
-regarde. Les premières images en vol montraient le sol et le mur derrière chaque caméra ; la
-convention d'orientation de la classe Camera se vérifie ici, sans drone ni autopilote.
+"""Vérifie l'orientation des caméras fixes dans Isaac Sim, sans drone ni pilote : rend des vues d'orientation connue.
 
-    cameras_test.py --sortie /tmp/cams
+Origine : les premières images en vol montraient le sol et le mur derrière chaque caméra.
+    $PY cameras_test.py --sortie /tmp/cams      (une image .jpg par caméra dans --sortie ; --seed 9033 par défaut)
 """
 import argparse
 import sys
@@ -33,10 +32,11 @@ scene.world.reset()
 scene.finalize()
 omni.timeline.get_timeline_interface().play()
 
-# Au milieu du couloir central, à 3,5 m : quatre lacets sans plongée, puis deux plongées
+# Six vues depuis la grande zone (x = 2,7 m, y = 4 m) : quatre caps à 2 m de haut sans plongée,
+# puis deux plongées (+30° depuis 5,5 m, −30° depuis 2 m) ; enfin les caméras fixes des vidéos (préfixe mur_).
 ESSAIS = {
-    # dans la grande zone : est = face ouest du rack 2 a 4,4 m ; ouest = face est du rack 1 a 4,3 m ;
-    # nord = espace libre puis le mur nord a 13 m ; sud = espace libre puis le mur sud a 16 m
+    # ce que chaque vue doit montrer : est = face ouest du rack 2 à 4,4 m ; ouest = face est du rack 1 à 4,3 m ;
+    # nord = espace libre puis le mur nord à 13 m ; sud = espace libre puis le mur sud à 16 m
     "zone_lacet_0_est": dict(position=(2.7, 4.0, 2.0), yaw=0.0, plongee=0.0, fov=80.0),
     "zone_lacet_90_nord": dict(position=(2.7, 4.0, 2.0), yaw=90.0, plongee=0.0, fov=80.0),
     "zone_lacet_180_ouest": dict(position=(2.7, 4.0, 2.0), yaw=180.0, plongee=0.0, fov=80.0),
@@ -50,6 +50,7 @@ for _ in range(scene_mod.RENDER_LAG + 5):
     scene.world.step(render=True)
 for nom, cam in cams.items():
     img = None
+    # jusqu'à 30 rendus supplémentaires pour obtenir une image non vide
     for _ in range(30):
         img = cam.get_rgb()
         if img is not None and getattr(img, "ndim", 0) == 3 and img.size:

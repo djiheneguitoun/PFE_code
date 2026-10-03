@@ -1,8 +1,16 @@
 #!/bin/bash
+# Installation, étape 4/5 : dépendances de ns-3 (simulateur de réseaux) et de NS3-Sionna (ZMQ,
+# ProtoBuf), téléchargement de ns-allinone-3.40 dans ~ et compilation avec exemples et tests.
+# Sert aux scénarios réseau de scenarios/ (Wi-Fi, 5G entre drones).
+#   bash scripts/installation/04_install_ns3.sh   (première compilation ~5-10 min)
+# Arrête le script à la première commande en échec
 set -e
 
+# Version de ns-3 installée
 NS3_VERSION="3.40"
+# Dossier extrait de l'archive ns-allinone
 NS3_DIR="$HOME/ns-allinone-${NS3_VERSION}"
+# Dossier de ns-3 lui-même (contient la commande ./ns3)
 NS3_SRC="$NS3_DIR/ns-${NS3_VERSION}"
 
 echo "=============================================="

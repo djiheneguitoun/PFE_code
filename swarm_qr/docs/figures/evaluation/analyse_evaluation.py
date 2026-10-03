@@ -1,9 +1,8 @@
-"""Toutes les mesures et toutes les figures du chapitre évaluation.
-
-Lit les quatre vols du système et les quatre vols de la référence, calcule chaque métrique
-définie au protocole, écrit `mesures.json` et `tableaux.md`, et produit les figures.
-
-    analyse_evaluation.py
+"""Calcule les mesures du chapitre évaluation et dessine ses 9 figures ev_*.png : lit les 4 vols du
+système (11_mission/tests of system/eval_*) et les 4 vols de Pore et al. (13_pore/pore_*), écrit
+mesures.json et les figures à côté du script. Les scores de l'inférence active et de l'apprentissage
+par renforcement sont ceux mesurés antérieurement sur ces deux approches (APPRIS).
+    python analyse_evaluation.py
 """
 from __future__ import annotations
 
@@ -15,26 +14,30 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-EXP = Path(__file__).resolve().parents[3] / "experiments"
-ICI = Path(__file__).resolve().parent
-SYS = EXP / "11_mission" / "tests of system"
-PORE = EXP / "13_pore"
+EXP = Path(__file__).resolve().parents[3] / "experiments"   # swarm_qr/experiments
+ICI = Path(__file__).resolve().parent                        # mesures.json et figures écrits ici
+SYS = EXP / "11_mission" / "tests of system"                 # les 4 vols de l'évaluation finale du système
+PORE = EXP / "13_pore"                                       # les 4 vols de la méthode de Pore et al.
 
+# les 4 scénarios : nominal, panne d'un drone, entrepôt 9019 jamais vu, obstacle qui apparaît
 CAS = ["nominal", "panne", "9019", "obstacle"]
+# titres anglais des scénarios sur les figures
 TITRES = {"nominal": "Nominal", "panne": "Vehicle loss", "9019": "Unseen warehouse",
           "obstacle": "Obstacle appearing"}
+# dossier de chaque vol, par méthode puis par scénario
 DOSSIERS = {
     "systeme": {c: SYS / f"eval_{c}" for c in CAS},
     "pore": {c: PORE / f"pore_{c}" for c in CAS},
 }
-# résultats mesurés antérieurement sur les deux approches apprises du projet
+# % de l'inventaire lu par les deux approches apprises antérieures du projet : inférence active (aif)
+# et apprentissage par renforcement (rl), résultats mesurés antérieurement sur ces deux approches
 APPRIS = {
     "aif": {"nominal": 41.0, "panne": 38.0, "9019": 36.0, "obstacle": 39.0},
     "rl":  {"nominal": 19.0, "panne": 15.0, "9019": 14.0, "obstacle": 17.0},
 }
 
-C_SYS, C_PORE, C_AIF, C_RL = "#2F9E44", "#C92A2A", "#B07A22", "#7A3E9D"
-ENCRE, DOUCE = "#16201C", "#5F6B66"
+C_SYS, C_PORE, C_AIF, C_RL = "#2F9E44", "#C92A2A", "#B07A22", "#7A3E9D"   # couleur de chaque méthode
+ENCRE, DOUCE = "#16201C", "#5F6B66"                                       # couleurs du texte
 plt.rcParams.update({
     "font.family": "DejaVu Sans", "font.size": 10, "axes.edgecolor": "#C9D3CF",
     "axes.labelcolor": ENCRE, "text.color": ENCRE, "xtick.color": DOUCE, "ytick.color": DOUCE,
@@ -44,18 +47,20 @@ plt.rcParams.update({
 
 
 def charge(dossier: Path) -> dict:
+    """Lit mission.json (journal du vol) et resultats.json (bilan) d'un vol ; renvoie {"m": ..., "r": ...}."""
     m = json.loads((dossier / "mission.json").read_text())
     r = json.loads((dossier / "resultats.json").read_text())
     return {"m": m, "r": r}
 
 
 def distance(traj) -> float:
+    """Renvoie la distance parcourue (m) le long d'une trajectoire [(t, x, y, z), ...]."""
     p = np.array([t[1:] for t in traj], dtype=float)
     return float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum()) if len(p) > 1 else 0.0
 
 
 def jalon(courbe, part: float):
-    """Instant où la part demandée du total finalement lu est atteinte."""
+    """Renvoie l'instant (s) où la part `part` du total finalement lu est atteinte, ou None."""
     c = np.array(courbe, dtype=float)
     if not len(c):
         return None
@@ -65,6 +70,8 @@ def jalon(courbe, part: float):
 
 
 def mesures_vol(d: dict, methode: str) -> dict:
+    """Extrait les métriques d'un vol : codes lus, jalons 50/80/90 %, sécurité, distances, décisions,
+    coût des observations ; renvoie un dictionnaire."""
     m, r = d["m"], d["r"]
     lec = r.get("lecture", {})
     sec = r.get("securite", {})
@@ -124,6 +131,8 @@ def mesures_vol(d: dict, methode: str) -> dict:
 
 
 def tout() -> dict:
+    """Mesure les vols présents et ajoute les scores de l'inférence active et du renforcement
+    (APPRIS) ; renvoie {méthode: {scénario: mesures}}."""
     res = {"systeme": {}, "pore": {}}
     for methode, cas in DOSSIERS.items():
         for c, d in cas.items():
@@ -134,6 +143,7 @@ def tout() -> dict:
     return res
 
 
+# calcul des mesures dès le lancement du script, puis écriture de mesures.json
 R = tout()
 (ICI / "mesures.json").write_text(json.dumps(R, indent=1, default=str))
 print("mesures.json ecrit")
@@ -149,6 +159,7 @@ for c in CAS:
 
 # ------------------------------------------------------------------ figures
 def sauve(fig, nom):
+    """Ajuste la mise en page, enregistre la figure `nom` à 200 dpi à côté du script et la ferme."""
     fig.tight_layout()
     fig.savefig(ICI / nom, dpi=200)
     plt.close(fig)
@@ -156,7 +167,7 @@ def sauve(fig, nom):
 
 
 def f_methodes():
-    """La figure d'ensemble : quatre méthodes, quatre scénarios."""
+    """Dessine ev_methodes.png : part de l'inventaire lue par les 4 méthodes dans les 4 scénarios."""
     fig, ax = plt.subplots(figsize=(9.4, 4.6))
     x = np.arange(len(CAS))
     w = 0.2
@@ -176,6 +187,8 @@ def f_methodes():
 
 
 def f_lecture_temps():
+    """Dessine ev_lecture_temps.png : codes lus au fil du temps, système contre Pore et al., un
+    panneau par scénario (panne et obstacle marqués à 200 s)."""
     fig, axes = plt.subplots(2, 2, figsize=(9.6, 6.2), sharex=True, sharey=False)
     for ax, c in zip(axes.ravel(), CAS):
         for cle, coul, nom, st in (("systeme", C_SYS, "Proposed system", "-"),
@@ -209,6 +222,8 @@ def f_lecture_temps():
 
 
 def f_jalons():
+    """Dessine ev_jalons.png : temps pour lire 50, 80 et 90 % du total, système contre Pore et al.
+    (barre absente = jalon jamais atteint)."""
     fig, ax = plt.subplots(figsize=(8.4, 4.0))
     x = np.arange(len(CAS))
     w = 0.16
@@ -227,6 +242,8 @@ def f_jalons():
 
 
 def f_scenario(c, nom, texte, etat_avant=True):
+    """Dessine la courbe des codes lus d'un scénario à événement (à 200 s), système contre Pore et al.,
+    avec le nombre lu avant l'événement si `etat_avant` ; écrit la figure `nom`."""
     d, p = R["systeme"][c], R["pore"].get(c)
     fig, ax = plt.subplots(figsize=(7.6, 4.0))
     a = np.array(d["courbe"], dtype=float)
@@ -252,6 +269,7 @@ def f_scenario(c, nom, texte, etat_avant=True):
 
 
 def f_effort():
+    """Dessine ev_effort.png : distance volée par chaque drone, et codes lus pour 100 m volés."""
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.6, 4.0))
     x = np.arange(len(CAS))
     w = 0.25
@@ -274,6 +292,8 @@ def f_effort():
 
 
 def f_couts():
+    """Dessine ev_couts.png : coût moyen d'une observation (ms), réparti entre lidar, couverture,
+    décodage et détection apprise."""
     ordre = ["lidar", "couverture", "decodage", "detecteur"]
     noms = {"lidar": "LiDAR integration", "couverture": "coverage integration",
             "decodage": "decoding", "detecteur": "learned detection"}
@@ -294,6 +314,8 @@ def f_couts():
 
 
 def f_securite():
+    """Dessine ev_securite.png : distance minimale entre drones, points de trajectoire dans un rack,
+    cessions de priorité."""
     fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(10.6, 3.6))
     x = np.arange(len(CAS))
     for j, (cle, coul, nom) in enumerate((("systeme", C_SYS, "Proposed system"),
@@ -323,6 +345,7 @@ def f_securite():
 
 
 def f_decisions():
+    """Dessine ev_decisions.png : cibles choisies par genre (lire, couvrir, explorer) dans chaque scénario."""
     noms = {"lire": "read a spotted label", "couvrir": "cover an unobserved face",
             "explorer": "extend the known region"}
     coul = {"lire": C_SYS, "couvrir": "#B07A22", "explorer": "#364FC7"}

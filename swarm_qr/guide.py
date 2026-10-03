@@ -1,4 +1,10 @@
-"""Le guide vision-langage (étape 8) : un avis de bon sens sur où aller et par quel côté."""
+"""Le guide vision-langage, optionnel (étape 8) : conseille au drone une zone où aller, et un côté.
+
+`Guide` : un modèle généraliste (SmolVLM, Qwen2.5-VL) regarde la caméra et la carte vue de dessus.
+`GuideEntraine` : Qwen2.5-VL 3B en 4 bits + adaptateur LoRA (petites couches entraînées sur des vols)
+lit les faits de la carte en JSON. L'avis pèse dans la note des cibles avec un poids λ (planning.py) ;
+λ = 0 en mission finale. Lancé par `mission.py --guide ... --lam ...` ; bancs : experiments/12_guide.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +19,14 @@ import numpy as np
 
 from . import planning
 
+# Noms courts → modèles Hugging Face (500 millions et 2,2 milliards de paramètres).
 MODELES = {
     "smolvlm": "HuggingFaceTB/SmolVLM-500M-Instruct",
     "smolvlm-2b": "HuggingFaceTB/SmolVLM-Instruct",
 }
+# Mot de la réponse → numéro de côté (0 est, 1 ouest, 2 nord, 3 sud), en anglais ou en français.
 COTES = {"north": 2, "nord": 2, "south": 3, "sud": 3, "east": 0, "est": 0, "west": 1, "ouest": 1}
+# Consigne de `Guide` (en anglais) qui explique les deux images ; suivent les deux questions courtes.
 CONTEXTE = (
     "You guide a drone that must read QR codes glued on cardboard boxes stored on warehouse "
     "shelves. The first image is the drone's side camera. The second image is the map seen from "
@@ -30,10 +39,11 @@ QUESTION_COTE = CONTEXTE + "{description}The drone goes to zone {n}. From which 
 
 
 def decrit(zones: list[dict], position=None, codes_lus: int | None = None) -> str:
-    """Ce que la carte sait de chaque zone, en phrases : des faits, jamais la note du cerveau."""
+    """Renvoie, en phrases anglaises, les faits connus de chaque zone (jamais la note du cerveau)."""
     lignes = []
     for z in zones:
         faits = []
+        # zones récentes : comptages par genre de cible ; anciens instantanés : seulement les genres
         if z.get("n_lire") is not None:
             if z["n_lire"]:
                 faits.append(f"{z['n_lire']} QR code(s) spotted but not read yet")
@@ -62,18 +72,22 @@ def decrit(zones: list[dict], position=None, codes_lus: int | None = None) -> st
     return tete + "The map says: " + " ".join(lignes) + " "
 
 
+# Pixels par image au plus pour Qwen : environ 640 jetons d'image (un jeton couvre 28 × 28 pixels).
 MAX_PIXELS = 640 * 28 * 28
 
 
+# Texte de `GuideEntraine`, identique à celui de l'entraînement (sans image) : début, but, question.
 TETE = ("You help a team of drones that must read QR codes glued on cardboard boxes in a warehouse. "
         "You get no image, only the data the map holds. ")
 BUT = ("The drone must fly to the zone where it will read the largest number of QR codes that are "
        "still unknown. ")
 QUESTION = "\nWhich zone should the drone go to next? Answer with 'ANSWER: <zone number>'."
+# Champs retirés du dossier : ils égaraient le modèle (83 % de bonnes zones sans eux, 75 % avec, étape 8).
 DISTRACTEURS = ("total_candidate_targets", "target_kinds", "radius_m", "unexplored_frontier_groups")
 
 
 def boussole(zone, position) -> str:
+    """Renvoie la direction de la zone vue du drone (« north-east »…), ou « right here » à moins de 1 m."""
     dx = zone["centre"][0] - position[0]
     dy = zone["centre"][1] - position[1]
     ns = "north" if dy > 1.0 else ("south" if dy < -1.0 else "")
@@ -82,7 +96,8 @@ def boussole(zone, position) -> str:
 
 
 def dossier_zones(cas: dict, zones: list[dict], avec_note: bool = False) -> dict:
-    """Tout ce que la carte et l'essaim savent des zones à cet instant."""
+    """Renvoie le dossier complet (dict prêt pour JSON) : instant, codes lus, ce drone, coéquipiers, racks
+    et zones candidates ; `avec_note` y ajoute la note du cerveau géométrique."""
     moi = cas.get("position") or [0.0, 0.0, 0.0]
     autres = [d for d in cas.get("coequipiers", []) if d["i"] != cas.get("drone")]
     out = {
@@ -123,7 +138,8 @@ def dossier_zones(cas: dict, zones: list[dict], avec_note: bool = False) -> dict
 
 
 def epure(dos: dict, distracteurs: bool = True) -> dict:
-    """Le champ décisif en tête de chaque zone, et les champs distracteurs retirés."""
+    """Renvoie une copie du dossier où chaque zone commence par le champ décisif (QR repérés non lus)
+    et perd les champs DISTRACTEURS si `distracteurs` est vrai."""
     zones = []
     for z in dos["candidate_zones"]:
         tete = {"number": z["number"], "qr_codes_spotted_but_not_read": z["qr_codes_spotted_but_not_read"]}
@@ -133,32 +149,37 @@ def epure(dos: dict, distracteurs: bool = True) -> dict:
 
 
 def texte_pour_le_guide(cas: dict, zones: list[dict]) -> str:
-    """Le texte exact vu à l'entraînement : dossier épuré, sans image."""
+    """Renvoie le texte exact donné au guide entraîné, comme à l'entraînement : consigne, dossier
+    épuré en JSON et question, sans image."""
     return TETE + BUT + "Here is the map data as JSON:\n" + json.dumps(epure(dossier_zones(cas, zones)), indent=1) + QUESTION
 
 
 class GuideEntraine:
-    """Le modèle de 3 milliards en 4 bits, plus l'adaptateur LoRA appris sur la mission."""
+    """Le guide entraîné : Qwen2.5-VL 3B compressé en 4 bits + adaptateur LoRA, qui lit du texte seul."""
 
     def __init__(self, modele: str, adaptateur: str, device: str = "cuda", max_tokens: int = 12):
+        """Charge le modèle `modele` en 4 bits et y branche l'adaptateur LoRA `adaptateur` ; `max_tokens` =
+        longueur maximale de la réponse, en jetons."""
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         import torch
         from peft import PeftModel
         from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
 
+        # 4 bits (NF4) : le modèle 3B tient en 2,5 Go de mémoire graphique au lieu de 6,7 Go
         config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                     bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
         self.processor = AutoProcessor.from_pretrained(modele)
         base = AutoModelForImageTextToText.from_pretrained(modele, quantization_config=config,
                                                             device_map={"": device}, dtype=torch.float16,
                                                             attn_implementation="sdpa")
-        self.modele = PeftModel.from_pretrained(base, adaptateur).eval()
+        self.modele = PeftModel.from_pretrained(base, adaptateur).eval()   # le modèle reste gelé
         self.nom, self.device, self.max_tokens = f"{modele} + {adaptateur}", device, max_tokens
-        self.latences: list[float] = []
+        self.latences: list[float] = []          # s, une par appel
         self.reponses: list[str] = []
-        self._pool = ThreadPoolExecutor(max_workers=1)
+        self._pool = ThreadPoolExecutor(max_workers=1)   # un fil d'arrière-plan : la mission n'attend jamais
 
     def repond_texte(self, texte: str) -> str:
+        """Renvoie la réponse brute du modèle à un texte seul (sans hasard) et note sa latence."""
         import torch
         messages = [{"role": "user", "content": [{"type": "text", "text": texte}]}]
         prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
@@ -173,6 +194,8 @@ class GuideEntraine:
         return texte
 
     def conseille(self, cas: dict, zones: list[dict]) -> planning.Avis | None:
+        """Renvoie l'avis du guide : la zone lue dans « ANSWER: n », avec le côté de ses faces ; None si
+        la réponse ne désigne aucune zone."""
         reponse = self.repond_texte(texte_pour_le_guide(cas, zones))
         m = re.search(r"ANSWER\s*[:=]?\s*(\d+)", reponse, re.IGNORECASE) or re.search(r"(\d+)", reponse)
         if not m:
@@ -181,23 +204,29 @@ class GuideEntraine:
         z = next((z for z in zones if z["numero"] == numero), None)
         if z is None:
             return None
+        # le côté n'est pas demandé au modèle : c'est celui des faces de la zone, lu sur la carte
         inverse = {nom: k for k, nom in planning.NOMS_COTES.items()}
         cote = inverse.get(z.get("cote"))
         phrase = f"zone {numero}" + (f", cote {z['cote']}" if z.get("cote") else "") + f" ({reponse[:20]!r})"
         return planning.Avis(centre=np.array([*z["centre"][:2], 0.0]), rayon=float(z["rayon"]), cote=cote, phrase=phrase)
 
     def demande(self, cas: dict, zones: list[dict]) -> Future:
+        """Lance `conseille` en arrière-plan et renvoie aussitôt un Future (résultat à venir)."""
         return self._pool.submit(self.conseille, cas, list(zones))
 
     def bilan(self) -> dict:
+        """Renvoie le nom du modèle, le nombre d'appels et la latence médiane (s)."""
         return {"modele": self.nom, "appels": len(self.latences),
                 "latence_mediane_s": round(float(np.median(self.latences)), 2) if self.latences else None}
 
 
 class Guide:
+    """Le guide généraliste : un modèle vision-langage (SmolVLM ou Qwen) qui répond à partir d'images."""
+
     def __init__(self, nom: str = "smolvlm", max_tokens: int = 60, device: str = "cuda",
                  quantisation: str | None = None):
-        """`quantisation` : None (poids en fp16), "4bit", "8bit"."""
+        """Charge le modèle `nom` (alias de MODELES ou chemin) ; `quantisation` : None (16 bits), "4bit",
+        "8bit" ou "4bit-vision16" (encodeur d'images gardé en 16 bits)."""
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -216,11 +245,13 @@ class Guide:
                                             bnb_4bit_compute_dtype=torch.float16,
                                             bnb_4bit_use_double_quant=True)
             if quantisation.endswith("vision16"):
+                # l'encodeur d'images et la couche de sortie ne sont pas compressés
                 config.llm_int8_skip_modules = ["visual", "lm_head"]
             self.modele = AutoModelForImageTextToText.from_pretrained(
                 self.nom, quantization_config=config, device_map={"": self.device}, dtype=torch.float16,
                 attn_implementation="sdpa")
         elif device == "auto":
+            # « auto » : le modèle est réparti entre la carte graphique et la mémoire centrale
             self.modele = AutoModelForImageTextToText.from_pretrained(
                 self.nom, dtype=torch.float16, device_map="auto", attn_implementation="sdpa")
         else:
@@ -233,11 +264,13 @@ class Guide:
         self._pool = ThreadPoolExecutor(max_workers=1)
 
     def repond(self, image_bgr: np.ndarray, vue_bgr: np.ndarray, question: str) -> str:
-        """La réponse brute du modèle aux deux images et à une question."""
+        """Renvoie la réponse brute du modèle à `question`, avec deux images : la caméra du drone et la
+        carte vue de dessus."""
         return self.repond_images([image_bgr, vue_bgr], question)
 
     def repond_images(self, images_bgr: list, question: str, hasard: float = 0.0) -> str:
-        """La même chose avec un nombre libre d'images : une seule pour un contrôle de perception."""
+        """Renvoie la réponse brute du modèle avec un nombre libre d'images (même aucune) ; `hasard` > 0 :
+        tirage avec cette température (pour les votes), sinon réponse toujours identique."""
         import torch
         from PIL import Image
 
@@ -262,7 +295,8 @@ class Guide:
 
     @staticmethod
     def zone_dans(texte: str, zones: list[dict]) -> int | None:
-        """Le numéro de zone lu dans la réponse : « zone 3 », « 3. », « Zone: 3 »."""
+        """Renvoie le numéro de zone lu dans la réponse (« zone 3 », « 3. », « Zone: 3 »), ou None s'il
+        ne correspond à aucune zone proposée."""
         numeros = {z["numero"] for z in zones}
         m = re.search(r"zone\s*[:=]?\s*(\d+)", texte, re.IGNORECASE) or re.search(r"(\d+)", texte)
         if not m:
@@ -272,6 +306,7 @@ class Guide:
 
     @staticmethod
     def cote_dans(texte: str) -> int | None:
+        """Renvoie le numéro du premier côté cité dans la réponse (north, sud…, voir COTES), ou None."""
         for mot in re.findall(r"[a-zA-Zéè]+", texte.lower()):
             if mot in COTES:
                 return COTES[mot]
@@ -279,7 +314,8 @@ class Guide:
 
     def conseille(self, image_bgr, vue_bgr, zones: list[dict], position=None,
                   description: str | None = None) -> planning.Avis | None:
-        """Deux questions courtes plutôt qu'une longue : un petit modèle suit mieux une consigne à la fois."""
+        """Renvoie l'avis du guide (ou None) en deux questions courtes, la zone puis le côté : un petit
+        modèle suit mieux une consigne à la fois."""
         desc = description or ""
         numero = self.zone_dans(self.repond(image_bgr, vue_bgr, QUESTION_ZONE.format(description=desc)), zones)
         if numero is None:
@@ -292,9 +328,10 @@ class Guide:
                              phrase=phrase + f" ({self.reponses[-2][:40]!r} / {texte_cote[:40]!r})")
 
     def demande(self, image_bgr, vue_bgr, zones, position=None, description: str | None = None) -> Future:
-        """Le même avis, calculé en arrière-plan."""
+        """Lance `conseille` en arrière-plan sur une copie des images et renvoie aussitôt un Future."""
         return self._pool.submit(self.conseille, image_bgr.copy(), vue_bgr.copy(), zones, position, description)
 
     def bilan(self) -> dict:
+        """Renvoie le nom du modèle, le nombre d'appels et la latence médiane (s)."""
         return {"modele": self.nom, "appels": len(self.latences),
                 "latence_mediane_s": round(float(np.median(self.latences)), 2) if self.latences else None}

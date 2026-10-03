@@ -1,5 +1,8 @@
-"""Caméra de survol et masquage du toit, sur les caméras natives d'Isaac Sim.
-À importer après le démarrage du simulateur. Les fonctions d'image pures sont dans `_img`."""
+"""Vue de dessus de l'entrepôt pour les expériences : caméra de survol fixe et toit masqué.
+
+À importer après le démarrage d'Isaac Sim (caméras natives du simulateur). Réexporte aussi les
+fonctions d'image de `_img`. Utilisé par les tests 01, 02, 03 et par 05_sitl/debug_cams.py.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +11,13 @@ from isaacsim.sensors.camera import Camera
 
 from ._img import board, label, save, side_by_side, to_bgr, video  # noqa: F401
 
-OVERVIEW_PRIM = "/World/Overview"
-ROOF_KEYWORDS = ("ceiling", "beam", "lamp", "pillar", "roof")
+OVERVIEW_PRIM = "/World/Overview"  # chemin de la caméra de survol dans la scène
+ROOF_KEYWORDS = ("ceiling", "beam", "lamp", "pillar", "roof")  # objets cachés, repérés par leur nom
 
 
 def hide_roof(stage) -> int:
-    """Cache le toit pour que la vue de dessus montre l'intérieur. Purement visuel : la
-    géométrie reste en place pour les capteurs et les collisions."""
+    """Rend invisibles plafond, poutres, lampes, piliers et toit pour la vue de dessus (seulement à
+    l'image : collisions et lidar les voient encore) ; renvoie le nombre d'objets cachés."""
     from pxr import UsdGeom
 
     n = 0
@@ -26,8 +29,10 @@ def hide_roof(stage) -> int:
 
 
 def overview_camera(height: float = 26.0, size: int = 720, focal: float = 18.0) -> Camera:
-    """Caméra fixe qui regarde l'entrepôt de haut. Orientation en convention monde
-    (avant = +X) : un tangage de +90° fait regarder droit vers le sol."""
+    """Crée et renvoie la caméra fixe qui regarde l'entrepôt d'en haut (à `height` m, image
+    carrée de `size` px)."""
+    # Orientation en convention monde (avant = +X) : un tangage de +90° fait regarder droit vers
+    # le sol.
     return Camera(
         prim_path=OVERVIEW_PRIM,
         position=np.array([-0.5, 3.0, height]),
@@ -37,7 +42,8 @@ def overview_camera(height: float = 26.0, size: int = 720, focal: float = 18.0) 
 
 
 def overview_init(cam: Camera, focal: float = 18.0) -> None:
-    """Après world.reset() : branche la caméra et règle son objectif."""
+    """Branche la caméra au rendu (à appeler après world.reset()) et règle son objectif : focale
+    `focal`, ouverture 20,955, images entre 0,5 et 80 m."""
     cam.initialize()
     cam.set_focal_length(focal)
     cam.set_horizontal_aperture(20.955)

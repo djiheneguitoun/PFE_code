@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Enregistre les résultats d'un run AIF dans logs/runs/run_<AAAAMMJJ_HHMMSS>_<tag>/ (appelé à la fin de 12_aif_isaac_sim.py).
+
+Écrit config.json, history.json, state_final.json, qr_stats.json, un README.md résumé et 11 graphiques PNG (couverture,
+entropie, innovation, phases de résilience, carte finale, trajectoires, latences ns-3…). Détail : logs/A_LIRE_POUR_LE_PROMOTEUR/.
+"""
 from __future__ import annotations
 
 import json
@@ -11,8 +16,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# palette alignée sur le dashboard
+# Couleurs des drones D0, D1… (mêmes que le tableau de bord dashboard_aif)
 DRONE_COLORS = ["#22d3ee", "#34d399", "#a78bfa", "#fbbf24", "#f472b6", "#fb923c"]
+# Couleur des bandes de fond par phase de résilience (la phase « normal » n'est pas coloriée)
 PHASE_COLORS = {
     "normal":   "#10b981",
     "recovery": "#ef4444",
@@ -21,6 +27,7 @@ PHASE_COLORS = {
 
 
 def _safe_cfg_dict(cfg) -> Dict[str, Any]:
+    """Convertit la configuration (dataclass ou objet) en dictionnaire pour le JSON ; les NaN deviennent None."""
     if is_dataclass(cfg):
         d = asdict(cfg)
     else:
@@ -32,10 +39,12 @@ def _safe_cfg_dict(cfg) -> Dict[str, Any]:
 
 
 def _workspace_root() -> Path:
+    """Renvoie la racine du projet (dossier parent de scripts/)."""
     return Path(__file__).resolve().parent.parent
 
 
 def _resolve_runs_dir(cfg) -> Path:
+    """Renvoie le dossier des runs : cfg.runs_dir (option --runs-dir) s'il est donné, sinon <racine>/logs/runs."""
     explicit = getattr(cfg, "runs_dir", "") or ""
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -43,6 +52,7 @@ def _resolve_runs_dir(cfg) -> Path:
 
 
 def make_run_dir(cfg) -> Path:
+    """Crée et renvoie le dossier run_<AAAAMMJJ_HHMMSS>_<tag> ; la date est celle de la fin du run (appel en fin de run)."""
     base = _resolve_runs_dir(cfg)
     base.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -53,6 +63,7 @@ def make_run_dir(cfg) -> Path:
 
 
 def _setup_matplotlib():
+    """Prépare matplotlib sans écran (Agg) avec le thème sombre du tableau de bord ; renvoie pyplot."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -73,6 +84,7 @@ def _setup_matplotlib():
 
 
 def _save(fig, path: Path):
+    """Enregistre la figure en PNG (120 dpi) puis la ferme."""
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     import matplotlib.pyplot as plt
@@ -80,6 +92,7 @@ def _save(fig, path: Path):
 
 
 def _plot_belief_map(fused_belief, run_dir: Path, agents: List = None):
+    """Trace la carte fusionnée finale (probabilité d'obstacle par case) et la position des drones → belief_map_final.png."""
     plt = _setup_matplotlib()
     arr = np.asarray(fused_belief.probability, dtype=float)
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -105,6 +118,7 @@ def _plot_belief_map(fused_belief, run_dir: Path, agents: List = None):
 
 
 def _plot_trajectories(agents: List, fused_belief, run_dir: Path):
+    """Trace le trajet de chaque drone sur la carte finale en gris → trajectories.png."""
     plt = _setup_matplotlib()
     fig, ax = plt.subplots(figsize=(7, 5))
     arr = np.asarray(fused_belief.probability, dtype=float)
@@ -128,6 +142,7 @@ def _plot_trajectories(agents: List, fused_belief, run_dir: Path):
 
 
 def _series(history: List[Dict], key: str) -> Tuple[List[int], List[float]]:
+    """Renvoie (steps, valeurs) de la métrique `key` sur tout l'historique (0 si absente)."""
     xs = [h.get("step", i) for i, h in enumerate(history)]
     ys = [float(h.get(key, 0.0) or 0.0) for h in history]
     return xs, ys
@@ -135,6 +150,7 @@ def _series(history: List[Dict], key: str) -> Tuple[List[int], List[float]]:
 
 def _plot_simple(history, key: str, title: str, ylabel: str,
                  path: Path, color: str = "#3b82f6", y_range=None):
+    """Trace une métrique de l'historique en fonction du step AIF et l'enregistre dans le PNG `path`."""
     plt = _setup_matplotlib()
     xs, ys = _series(history, key)
     fig, ax = plt.subplots(figsize=(8, 3.6))
@@ -149,6 +165,7 @@ def _plot_simple(history, key: str, title: str, ylabel: str,
 
 
 def _plot_innovation(history, run_dir: Path):
+    """Trace l'innovation (écart entre LiDAR et carte) moyenne et lissée (EMA), sur fond de phases → innovation.png."""
     plt = _setup_matplotlib()
     xs, mean = _series(history, "innovation_mean")
     _, ema = _series(history, "innovation_ema")
@@ -164,6 +181,7 @@ def _plot_innovation(history, run_dir: Path):
 
 
 def _plot_discovery_rate(history, run_dir: Path):
+    """Trace la vitesse de découverte (gain de couverture par step, moyenné sur 5 steps) → discovery_rate.png."""
     plt = _setup_matplotlib()
     xs, ys = _series(history, "discovery_rate")
     fig, ax = plt.subplots(figsize=(8, 3.6))
@@ -178,6 +196,7 @@ def _plot_discovery_rate(history, run_dir: Path):
 
 
 def _plot_coverage_known_vs_global(history, run_dir: Path):
+    """Compare la couverture globale et celle connue des planificateurs (écart en rouge, dû au réseau) → coverage_known_vs_global.png."""
     plt = _setup_matplotlib()
     xs, global_cov = _series(history, "exploration_pct")
     _, known_cov = _series(history, "coverage_known_to_planner")
@@ -197,6 +216,7 @@ def _plot_coverage_known_vs_global(history, run_dir: Path):
 
 
 def _plot_decisions_per_min(history, run_dir: Path):
+    """Trace le nombre de décisions fraîches par minute (fenêtre de 10 steps) → decisions_per_min.png."""
     plt = _setup_matplotlib()
     xs, ys = _series(history, "decisions_per_min")
     fig, ax = plt.subplots(figsize=(8, 3.6))
@@ -210,6 +230,7 @@ def _plot_decisions_per_min(history, run_dir: Path):
 
 
 def _phase_bands(ax, history):
+    """Colore en fond les intervalles de steps en phase « recovery » (rouge) ou « durable » (jaune)."""
     if not history:
         return
     cur_phase = history[0].get("resilience_phase", "normal")
@@ -230,6 +251,7 @@ def _phase_bands(ax, history):
 
 
 def _plot_resilience(history, run_dir: Path, events: List[Dict] = None):
+    """Trace l'entropie moyenne avec les bandes de phase et une ligne par événement de stress → resilience_phases.png."""
     plt = _setup_matplotlib()
     xs, ent = _series(history, "mean_entropy")
     fig, ax = plt.subplots(figsize=(8, 3.6))
@@ -252,6 +274,7 @@ def _plot_resilience(history, run_dir: Path, events: List[Dict] = None):
 
 def _plot_ns3(ns3_pairs: Dict[Tuple[int, int], Dict[str, float]],
               n_drones: int, run_dir: Path):
+    """Trace la matrice des latences ns-3 entre paires de drones (ms) → ns3_latencies.png ; rien si pas de données."""
     if not ns3_pairs:
         return
     plt = _setup_matplotlib()
@@ -285,6 +308,7 @@ def generate_run_artifacts(
     qr_stats: Optional[Dict] = None,
     ns3_pairs: Optional[Dict[Tuple[int, int], Dict[str, float]]] = None,
 ) -> Path:
+    """Crée le dossier du run et y écrit les JSON, les graphiques (un échec n'empêche pas les autres) et un README.md ; renvoie le dossier."""
     run_dir = make_run_dir(cfg)
 
     # 1) JSON : config + history + state final

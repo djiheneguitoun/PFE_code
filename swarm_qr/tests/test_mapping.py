@@ -1,7 +1,8 @@
-"""La carte partagée, testée sans simulateur.
+"""Tests de la carte partagée (`mapping.py`, étape 4), sans simulateur.
 
-Un monde de boîtes alignées et un lidar analytique suffisent : on connaît la vérité, donc on
-vérifie la carte reconstruite case par case, en une fraction de seconde.
+Un monde de boîtes et un lidar exact suffisent : la vérité est connue, donc la carte se vérifie
+case par case (occupation, couverture, panneaux, pistes, réservations, frontières, chemins).
+Lancement, depuis la racine du projet : python -m pytest swarm_qr/tests/test_mapping.py -q
 """
 
 from __future__ import annotations
@@ -22,16 +23,20 @@ from swarm_qr.mapping import INCONNU, LIBRE, OCCUPE, Carte  # noqa: E402
 # ---------------------------------------------------------------- monde d'essai
 
 class Monde:
-    """Des boîtes alignées sur les axes, et un lidar qui dit la vérité."""
+    """Monde d'essai : des boîtes alignées sur les axes, vues par un lidar exact (sans bruit)."""
 
     def __init__(self, boites):
+        """Enregistre les boîtes, chacune donnée par son coin bas et son coin haut (m)."""
         self.boites = [(np.asarray(lo, float), np.asarray(hi, float)) for lo, hi in boites]
 
     def occupe(self, p) -> bool:
+        """Renvoie vrai si le point `p` est à l'intérieur d'une des boîtes."""
         p = np.asarray(p, float)
         return any(np.all(p >= lo) and np.all(p <= hi) for lo, hi in self.boites)
 
     def portee(self, o, d, maxi=25.0) -> float:
+        """Renvoie la distance (m) à laquelle le rayon parti de `o` selon `d` touche la première
+        boîte, ou l'infini si rien n'est touché avant `maxi` (25 m)."""
         o, d = np.asarray(o, float), np.asarray(d, float)
         best = np.inf
         for lo, hi in self.boites:
@@ -44,6 +49,8 @@ class Monde:
         return best if best <= maxi else np.inf
 
     def tour(self, o, n_h=180, n_v=10, fov_v=36.0):
+        """Simule un tour de lidar depuis `o` : 180 × 10 rayons (tous les 2 degrés, 36 degrés en
+        vertical) ; renvoie leurs directions et leurs distances."""
         az = np.radians(np.arange(n_h) * 360.0 / n_h)
         el = np.radians(np.linspace(-fov_v / 2, fov_v / 2, n_v))
         A, E = np.meshgrid(az, el, indexing="ij")
@@ -51,11 +58,13 @@ class Monde:
         return d, np.array([self.portee(o, u) for u in d])
 
 
-MUR = Monde([((2.0, -6.0, 0.0), (2.6, 6.0, 4.0))])       # un rack, à x = 2,0..2,6
-VIDE = Monde([])
+MUR = Monde([((2.0, -6.0, 0.0), (2.6, 6.0, 4.0))])       # un rack : x de 2,0 à 2,6 m, 4 m de haut
+VIDE = Monde([])                                          # aucun obstacle : le lidar ne touche rien
 
 
 def _carte_avec_mur():
+    """Renvoie une carte remplie par 21 tours de lidar devant le mur, pris à x = 0 tous les 50 cm
+    de y = −5 à 5 m, à 1,6 m de haut."""
     c = Carte()
     for y in np.arange(-5.0, 5.1, 0.5):
         o = [0.0, float(y), 1.6]
@@ -64,12 +73,15 @@ def _carte_avec_mur():
 
 
 def _idx(c, p):
+    """Renvoie l'indice (i, j, k) de la case de la carte qui contient le point `p`."""
     return tuple(c.indice([p])[0])
 
 
 # ---------------------------------------------------------------- mémoire et vitesse
 
 def test_memoire_de_la_grille():
+    """Vérifie la taille de la grille : 84 × 128 × 24 cases de 25 cm au plus, moins de 2 Mo en
+    mémoire pour toute la carte."""
     c = Carte()
     r = c.resume()
     assert r["cases"] == 84 * 128 * 24
@@ -78,6 +90,8 @@ def test_memoire_de_la_grille():
 
 
 def test_une_observation_reste_rapide():
+    """Vérifie qu'ajouter un tour de lidar et un champ de caméra prend moins de 150 ms en moyenne
+    (5 essais), pour ne pas freiner la décision."""
     c = Carte()
     d, r = MUR.tour([0.0, 0.0, 1.6])
     t0 = time.perf_counter()
@@ -91,6 +105,8 @@ def test_une_observation_reste_rapide():
 # ---------------------------------------------------------------- occupation
 
 def test_un_lidar_ne_connait_que_les_surfaces():
+    """Vérifie qu'après trois tours de lidar, la face avant du mur est occupée, l'espace devant
+    est libre, et l'arrière du mur (x = 4 m) reste inconnu."""
     c = Carte()
     for y in (-3.0, 0.0, 3.0):
         o = [0.0, y, 1.6]
@@ -102,6 +118,8 @@ def test_un_lidar_ne_connait_que_les_surfaces():
 
 
 def test_une_mesure_aberrante_ne_renverse_pas_une_case():
+    """Vérifie qu'un seul faux écho à 1 m, après six tours de lidar cohérents, ne fait pas passer
+    la case de libre à occupée."""
     c = Carte()
     o = [0.0, 0.0, 1.6]
     d, r = MUR.tour(o)
@@ -112,8 +130,8 @@ def test_une_mesure_aberrante_ne_renverse_pas_une_case():
 
 
 def test_la_carte_reconstruite_colle_a_la_verite():
-    """Le test d'exactitude, en séparant les trois choses qu'un lidar peut savoir : le vide
-    devant, la surface, et l'ombre derrière."""
+    """Vérifie la carte du mur case par case : plus de 95 % du vide devant est connu et tout libre,
+    plus de 95 % de la face est occupée, et rien n'est inventé derrière."""
     c = _carte_avec_mur()
     ys = np.arange(-3.5, 3.6, 0.25)
     devant = c.etat([[x, y, 1.6] for x in np.arange(0.5, 1.95, 0.25) for y in ys])
@@ -128,6 +146,8 @@ def test_la_carte_reconstruite_colle_a_la_verite():
 # ---------------------------------------------------------------- couverture
 
 def test_la_couverture_suit_la_distance_apparente():
+    """Vérifie l'enveloppe de lecture (1,5 à 4 m de distance apparente) : couvert à 2,5 et 3,9 m de
+    face ; pas à 1,2 m, ni à 5 m, ni derrière, ni à 3,9 m vu à 27 degrés (4,4 m apparents)."""
     c = Carte()
     assert c.integre_couverture([0.0, 0.0, 1.6], [1.0, 0.0, 0.0], t=0.0) > 0
     vu = lambda p: c.couverture[_idx(c, p)] > 0
@@ -141,9 +161,8 @@ def test_la_couverture_suit_la_distance_apparente():
 
 
 def test_la_couverture_retient_de_quel_cote_on_a_regarde():
-    """Une caméra qui regarde vers +x rend lisible un panneau qui lui fait face (normale -x),
-    pas un panneau tourné vers +x, même si sa case est dans le champ — c'est le cas d'un
-    panneau vu à travers un rack depuis l'autre côté."""
+    """Vérifie qu'un regard vers +x rend lisible un panneau tourné vers −x, mais pas vers +x ni +y
+    (panneau vu à travers un rack) ; un regard vers −x depuis x = 5 m ajoute le panneau +x."""
     c = Carte()
     c.integre_couverture([0.0, 0.0, 1.6], [1.0, 0.0, 0.0], t=0.0)
     assert c.couvert_pour([[2.5, 0.0, 1.6]], [-1, 0, 0])[0]
@@ -154,6 +173,8 @@ def test_la_couverture_retient_de_quel_cote_on_a_regarde():
 
 
 def test_la_couverture_s_arrete_au_mur():
+    """Vérifie que la caméra ne voit pas à travers le mur : la case à x = 3,5 m, derrière le rack
+    (x = 2 à 2,6 m), n'est pas couverte."""
     c = Carte()
     o = [0.0, 0.0, 1.6]
     c.integre_lidar(o, *MUR.tour(o), t=0.0)
@@ -164,6 +185,8 @@ def test_la_couverture_s_arrete_au_mur():
 # ---------------------------------------------------------------- panneaux
 
 def test_un_code_lu_deux_fois_au_meme_endroit_reste_un_panneau():
+    """Vérifie que deux lectures de BOX_007 à 10 cm d'écart (seuil de fusion : 45 cm) font un seul
+    panneau, compté 2 fois, placé à la moyenne x = 2,05 m."""
     c = Carte()
     c.integre_lecture("BOX_007", [2.0, 1.0, 1.5], [-1, 0, 0], t=1.0)
     c.integre_lecture("BOX_007", [2.1, 1.0, 1.5], [-1, 0, 0], t=2.0)
@@ -173,8 +196,8 @@ def test_un_code_lu_deux_fois_au_meme_endroit_reste_un_panneau():
 
 
 def test_les_deux_faces_d_un_carton_restent_deux_panneaux():
-    """Un carton porte le même code devant et derrière. Les confondre placerait le panneau au
-    milieu du carton, à mi-chemin des deux faces."""
+    """Vérifie que le même code lu sur les deux faces d'un carton (x = 2,0 et 2,72 m) donne deux
+    panneaux, chacun à sa place, et non un seul au milieu du carton."""
     c = Carte()
     c.integre_lecture("BOX_007", [2.0, 1.0, 1.5], [-1, 0, 0], t=1.0)
     c.integre_lecture("BOX_007", [2.72, 1.0, 1.5], [1, 0, 0], t=2.0)
@@ -184,8 +207,8 @@ def test_les_deux_faces_d_un_carton_restent_deux_panneaux():
 
 
 def test_un_carton_n_a_que_deux_faces():
-    """Une troisième lecture du même code, loin des deux faces connues, est une erreur de
-    décodage : la carte la refuse au lieu de créer un panneau fantôme."""
+    """Vérifie qu'une troisième lecture du même code, loin des deux faces connues, est refusée
+    (renvoie None) : c'est une erreur de décodage, pas un troisième panneau."""
     c = Carte()
     c.integre_lecture("BOX_007", [2.0, 1.0, 1.5], [-1, 0, 0], t=1.0)
     c.integre_lecture("BOX_007", [2.72, 1.0, 1.5], [1, 0, 0], t=2.0)
@@ -194,7 +217,8 @@ def test_un_carton_n_a_que_deux_faces():
 
 
 def test_un_segment_planifie_se_revele_coupe():
-    """Le drone découvre un mur en route : le segment déjà planifié doit être déclaré coupé."""
+    """Vérifie qu'un segment de x = 0 à 4 m, libre sur la carte vide, est déclaré coupé dès qu'un
+    tour de lidar révèle le mur à x = 2 m (le drone découvre un mur en route)."""
     c = Carte()
     a, b = [0.0, 0.0, 1.6], [4.0, 0.0, 1.6]
     assert c.segment_libre(a, b)
@@ -204,6 +228,7 @@ def test_un_segment_planifie_se_revele_coupe():
 
 
 def test_deux_reperages_au_meme_endroit_font_une_piste():
+    """Vérifie que deux repérages à 20 cm l'un de l'autre font une seule piste, vue 2 fois."""
     c = Carte()
     c.integre_reperage([2.0, 1.0, 1.5], t=1.0)
     c.integre_reperage([2.2, 1.0, 1.5], t=2.0)
@@ -211,6 +236,8 @@ def test_deux_reperages_au_meme_endroit_font_une_piste():
 
 
 def test_deux_cartons_voisins_restent_deux_pistes():
+    """Vérifie que deux repérages à 50 cm l'un de l'autre (deux cartons voisins, au-delà du seuil
+    de fusion de 45 cm) restent deux pistes."""
     c = Carte()
     c.integre_reperage([2.0, 1.0, 1.5], t=1.0)
     c.integre_reperage([2.0, 1.5, 1.5], t=1.0)       # le carton d'à côté, 50 cm plus loin
@@ -218,6 +245,8 @@ def test_deux_cartons_voisins_restent_deux_pistes():
 
 
 def test_une_lecture_chasse_la_piste_et_un_reperage_sur_un_lu_ne_cree_rien():
+    """Vérifie qu'une lecture à 5 cm d'une piste efface cette piste, et qu'un repérage près d'un
+    panneau déjà lu ne crée pas de nouvelle piste."""
     c = Carte()
     c.integre_reperage([2.0, 1.0, 1.5], t=1.0)
     c.integre_lecture("BOX_007", [2.05, 1.0, 1.5], [-1, 0, 0], t=2.0)
@@ -227,7 +256,8 @@ def test_une_lecture_chasse_la_piste_et_un_reperage_sur_un_lu_ne_cree_rien():
 
 
 def test_une_position_absurde_est_refusee():
-    """Une fausse détection produit une position 3D aberrante : la carte doit la jeter."""
+    """Vérifie que les positions aberrantes d'une fausse détection (x = 1e6 m, NaN, z = 1e9 m) sont
+    refusées (None), et que le dessin de la carte supporte une piste hors carte."""
     c = Carte()
     assert c.integre_reperage([1e6, 0.0, 1.5], t=1.0) is None
     assert c.integre_reperage([float("nan"), 0.0, 1.5], t=1.0) is None
@@ -240,6 +270,8 @@ def test_une_position_absurde_est_refusee():
 # ---------------------------------------------------------------- équipe
 
 def test_une_reservation_expire_toute_seule():
+    """Vérifie qu'une réservation de 10 s gêne les autres drones mais pas son auteur, puis
+    disparaît seule à t = 11 s."""
     c = Carte()
     c.annonce(0, [0, 0, 1.6], t=0.0)
     c.reserve(0, [3.0, 0.0, 1.5], duree=10.0)
@@ -251,7 +283,8 @@ def test_une_reservation_expire_toute_seule():
 
 
 def test_un_drone_muet_libere_ses_cibles():
-    """La panne d'un drone est gérée sans une ligne de code qui la surveille."""
+    """Vérifie qu'un drone silencieux depuis 30 s (seuil : 5 s) est déclaré muet et perd sa
+    réservation de 999 s, celle du drone actif restant : la panne se gère sans code spécial."""
     c = Carte()
     for d in (0, 1):
         c.annonce(d, [d, 0, 1.6], t=0.0)
@@ -263,6 +296,7 @@ def test_un_drone_muet_libere_ses_cibles():
 
 
 def test_la_liste_noire_oublie_apres_un_temps():
+    """Vérifie qu'une cible écartée pour 10 s (liste noire) est de nouveau permise à t = 11 s."""
     c = Carte()
     c.ecarte([3.0, 0.0, 1.5], duree=10.0)
     assert c.est_ecartee([3.0, 0.0, 1.5])
@@ -273,6 +307,8 @@ def test_la_liste_noire_oublie_apres_un_temps():
 # ---------------------------------------------------------------- frontières
 
 def test_les_frontieres_bordent_le_connu():
+    """Vérifie, après un tour de lidar dans le vide (disque libre de 8 m), que les frontières sont
+    des cases libres situées au bord du disque, entre 5 et 8,5 m du drone."""
     c = Carte()
     o = [0.0, 0.0, 1.6]
     c.integre_lidar(o, *VIDE.tour(o), t=0.0)
@@ -288,11 +324,15 @@ def test_les_frontieres_bordent_le_connu():
 # ---------------------------------------------------------------- chemins
 
 def test_ligne_droite_quand_le_libre_est_connu():
+    """Vérifie qu'entre deux points de l'espace libre connu devant le mur (y = −2 et 2 m), le
+    chemin est la ligne droite : aucun point de passage."""
     c = _carte_avec_mur()
     assert c.chemin([0.0, -2.0, 1.6], [0.0, 2.0, 1.6]) == []
 
 
 def test_le_chemin_contourne_le_mur_par_ses_coins():
+    """Vérifie que, pour passer de x = 1 à 4 m à travers le mur, le chemin le contourne : points de
+    passage hors obstacle, à 1,6 m d'altitude, 4 au plus (les coins)."""
     c = _carte_avec_mur()
     pts = c.chemin([1.0, 0.0, 1.6], [4.0, 0.0, 1.6])
     assert pts, "aucun détour proposé alors que le mur bloque"
@@ -304,27 +344,29 @@ def test_le_chemin_contourne_le_mur_par_ses_coins():
 
 
 def test_le_drone_peut_sortir_de_la_marge_d_un_obstacle():
-    """Posé à 30 cm d'un mur, le drone est dans la marge élargie, pas dans le mur : il doit
-    pouvoir planifier un chemin qui l'en sort, au lieu d'être déclaré bloqué."""
+    """Vérifie qu'un drone à 30 cm du mur, donc dans la marge de sécurité de 60 cm mais pas dans
+    le mur, obtient un chemin pour en sortir au lieu d'être déclaré bloqué."""
     c = _carte_avec_mur()
     assert c.chemin([1.7, 0.0, 1.6], [0.0, 3.0, 1.6]) is not None
 
 
 def test_pas_de_chemin_vers_l_interieur_d_un_obstacle():
+    """Vérifie qu'aucun chemin n'est proposé vers un point situé dans le mur (x = 2,3 m) : None."""
     c = _carte_avec_mur()
     assert c.chemin([0.0, 0.0, 1.6], [2.3, 0.0, 1.6]) is None
 
 
 def test_l_inconnu_reste_traversable():
-    """Sinon un drone ne sortirait jamais de la zone qu'il a déjà explorée."""
+    """Vérifie qu'un chemin existe sur une carte vide, de (0, 0) à (8, 8) : l'inconnu reste
+    traversable, sinon un drone ne sortirait jamais de la zone déjà explorée."""
     c = Carte()
     pts = c.chemin([0.0, 0.0, 1.6], [8.0, 8.0, 1.6])
     assert pts is not None
 
 
 def test_le_chemin_prefere_le_libre_connu_a_l_inconnu():
-    """Un couloir connu en U de 8 m contre une ligne droite de 4 m dans l'inconnu : le drone
-    doit prendre le couloir. Couper tout droit, c'est peut-être traverser un rack jamais vu."""
+    """Vérifie qu'entre une ligne droite de 4 m dans l'inconnu (peut-être un rack jamais vu) et un
+    couloir libre connu en U de 8 m, le chemin reste dans le couloir sur toute sa longueur."""
     c = Carte()
     for x in np.arange(2.0, 4.01, 0.25):
         c._ajoute([[x, 0.0, z] for z in (1.25, 1.5, 1.75)], -5.0)
@@ -343,6 +385,8 @@ def test_le_chemin_prefere_le_libre_connu_a_l_inconnu():
 # ---------------------------------------------------------------- sauvegarde et vue
 
 def test_sauver_puis_charger_rend_la_meme_carte(tmp_path):
+    """Vérifie qu'une carte sauvée (.npz et .json) puis rechargée garde son occupation, sa
+    couverture, le code lu, la piste et son heure (t = 3 s)."""
     c = _carte_avec_mur()
     c.integre_couverture([0.0, 0.0, 1.6], [1.0, 0.0, 0.0], t=1.0)
     c.integre_lecture("BOX_007", [2.0, 1.0, 1.5], [-1, 0, 0], t=2.0)
@@ -355,6 +399,8 @@ def test_sauver_puis_charger_rend_la_meme_carte(tmp_path):
 
 
 def test_la_vue_de_dessus_est_une_image_lisible():
+    """Vérifie que la vue de dessus est une image en couleurs (3 canaux) où l'on distingue au moins
+    4 couleurs différentes."""
     c = _carte_avec_mur()
     c.integre_couverture([0.0, 0.0, 1.6], [1.0, 0.0, 0.0], t=0.0)
     c.integre_lecture("BOX_007", [2.0, 1.0, 1.5], [-1, 0, 0], t=1.0)
@@ -373,6 +419,8 @@ if __name__ == "__main__":
 
 
 def test_le_canal_semantique_se_marque_par_position():
+    """Vérifie que `marque` étiquette « carton » la case de chaque point : deux points dans la même
+    case comptent 2 mais marquent 1 case ; le point hors carte (x = 999 m) est ignoré."""
     c = Carte()
     p = np.array([[-5.0, 0.0, 1.5], [-5.0, 0.0, 1.5], [999.0, 0.0, 1.5]])
     assert c.marque(p) == 2                       # le point hors carte est ignoré
@@ -381,6 +429,8 @@ def test_le_canal_semantique_se_marque_par_position():
 
 
 def test_le_premier_obstacle_sur_un_rayon_vient_de_la_carte():
+    """Vérifie qu'un rayon tiré vers +x depuis x = −5 m trouve le mur à 30 cm près (une case), et
+    que vers −x, sur 3 m où rien n'est connu, la réponse est None."""
     c = _carte_avec_mur()
     origine = np.array([-5.0, 0.0, 1.5])
     d = c.premier_obstacle(origine, np.array([1.0, 0.0, 0.0]), portee=8.0)
@@ -391,6 +441,8 @@ def test_le_premier_obstacle_sur_un_rayon_vient_de_la_carte():
 
 
 def test_un_coequipier_est_un_obstacle_pour_les_chemins():
+    """Vérifie qu'un coéquipier en (0, 0), de rayon 1,5 m, force un détour (points de passage à
+    plus de 1,2 m de lui), et que la ligne droite revient quand il est retiré."""
     c = _carte_avec_mur()
     depart, arrivee = np.array([0.0, -4.0, 1.6]), np.array([0.0, 4.0, 1.6])
     assert c.chemin(depart, arrivee) == []                     # ligne droite libre

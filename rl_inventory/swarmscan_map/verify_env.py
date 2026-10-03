@@ -1,19 +1,14 @@
-"""Validation de l'ENVIRONNEMENT avant tout entraînement.
+"""Vérifie l'environnement avant tout entraînement : une politique qui ne sait rien ne doit RIEN lire.
 
-Un environnement sain doit être INEXPLOITABLE : une politique qui ne sait rien ne doit
-obtenir aucune lecture. Si le hasard lit des QR, l'entraînement apprendra à tricher au lieu
-d'apprendre la tâche — c'est ce qui a coûté quatre semaines sur ce projet.
-
-  bash rl_inventory/launch.sh rl_inventory/swarmscan_map/verify_env.py --headless \
-       --policy random --level 7
-
-Politiques : random (uniforme ±1) | zero (immobile) | forward (plein gaz tout droit) |
-             checkpoint (--checkpoint chemin.pt, avec --sigma)
+Si le hasard lit des QR, l'entraînement apprend à tricher (erreur qui a coûté quatre semaines).
+Politiques : random (±1 au hasard), zero (immobile), forward (plein gaz tout droit), checkpoint (--checkpoint, --sigma).
+  bash rl_inventory/launch.sh rl_inventory/swarmscan_map/verify_env.py --headless --policy random --level 7
 """
 
 import argparse
 import os
 
+# limite la fragmentation de la mémoire GPU (à poser avant que torch n'utilise le GPU)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from isaaclab.app import AppLauncher
@@ -29,12 +24,14 @@ parser.add_argument("--spawn_help", type=int, default=1, help="0 : aucun spawn d
 parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# Isaac Sim doit démarrer AVANT d'importer les modules isaaclab et le reste du projet
 simulation_app = AppLauncher(args).app
 
 import sys
 
 import torch
 
+# racine du projet ajoutée au chemin : le script se lance depuis n'importe quel dossier
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from rl_inventory.config_rl import CFG
@@ -44,12 +41,13 @@ from rl_inventory.swarmscan_map.env_map import SwarmScanMapEnv, SwarmScanMapEnvC
 from rl_inventory.swarmscan_map.flatten_wrapper import SwarmMapVecEnv
 from rl_inventory.swarmscan_map.models import MapActorCritic
 
-D = len(AGENTS)
+D = len(AGENTS)  # nombre de drones par entrepôt (3)
+# groupes d'observation : l'acteur (policy) et le critique, comme à l'entraînement
 OBS_GROUPS = {"policy": ["maps", "vector"], "critic": ["maps", "vector", "privileged"]}
 
 
 def make_policy(vec, env):
-    """Renvoie une fonction obs → actions (num_envs*D, 4)."""
+    """Renvoie une fonction obs → actions (3B × 4) pour la politique choisie : random, zero, forward ou checkpoint."""
     n, dim = vec.num_envs, vec.num_actions
     if args.policy == "random":
         return lambda obs: torch.empty(n, dim, device=env.device).uniform_(-1.0, 1.0)
@@ -72,6 +70,7 @@ def make_policy(vec, env):
     det = args.sigma == 0.0
 
     def policy(obs):
+        """Renvoie les actions du réseau : la moyenne si σ = 0, sinon un tirage au hasard autour d'elle."""
         with torch.no_grad():
             net.update_distribution(net.actor_obs_normalizer(net.get_actor_obs(obs)))
             return net.distribution.mean if det else net.distribution.sample()
@@ -79,20 +78,22 @@ def make_policy(vec, env):
 
 
 def main():
+    """Joue un épisode complet, mesure lectures, vitesses et accélérations, compare bons et mauvais
+    épisodes, puis affiche les verdicts PASSE / ÉCHOUE."""
     torch.manual_seed(args.seed)
     cfg = SwarmScanMapEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
     env = SwarmScanMapEnv(cfg)
     env._curr.level = MAP_CFG.curriculum.notches if args.level < 0 else args.level
-    env._curr.cfg.min_episodes_per_notch = 10**9
+    env._curr.cfg.min_episodes_per_notch = 10**9    # niveau figé : ni montée ni recul
     env._curr.cfg.min_episodes_down = 10**9
     if not args.spawn_help:
-        env._curr.cfg.spawn_near_prob = (0.0, 0.0)
+        env._curr.cfg.spawn_near_prob = (0.0, 0.0)  # aucun départ aidé près d'un QR
     MAP_CFG.train.mission_target = 2.0            # épisodes complets, envs synchronisés
     vec = SwarmMapVecEnv(env)
     vec.get_observations()
-    env._ensure_qr()      # AVANT le reset de mesure : sinon les spawns dirigés ne sont pas tirés
+    env._ensure_qr()      # AVANT le reset de mesure : sinon les départs aidés ne sont pas tirés
     vec.reset()           # et tous les entrepôts démarrent à la pose par défaut, identiques
     env.map_log = {}
     policy = make_policy(vec, env)
@@ -100,13 +101,13 @@ def main():
     th = env._curr.thresholds()
     cap_cur, cap_nom = th["max_speed_mps"], MAP_CFG.gate.max_speed_mps
     horizon = int(env.max_episode_length)
-    dt = CFG.train.physics_dt * CFG.train.decimation
+    dt = CFG.train.physics_dt * CFG.train.decimation   # s : durée d'un pas de contrôle (1/30 s)
 
     reads_tot = torch.zeros(1, device=env.device)
     reads_apres_survitesse = torch.zeros(1, device=env.device)
     prev_lin = torch.zeros(env.num_envs, D, device=env.device)
     accels = []
-    slow_run = torch.zeros(env.num_envs, D, device=env.device)   # pas consécutifs sous le cap nominal
+    slow_run = torch.zeros(env.num_envs, D, device=env.device)   # pas consécutifs sous la vitesse limite nominale
     run_lengths, gate_frac, nom_frac, snapshot = [], None, None, None
     v_sum, v_n = 0.0, 0
 
@@ -117,9 +118,10 @@ def main():
                     {k: v.clone() for k, v in env._beh_acc.items()},       # tout à zéro
                     env._mapper.scan.amax(dim=1).flatten(1).sum(-1).clone())
         _, _, _, infos = vec.step(policy(obs))
-        lin = env._lin_k                                          # (B,D) vitesse planaire réelle
+        lin = env._lin_k                                          # (B,D) vitesse horizontale réelle
         new = env._new_reads.transpose(0, 1)                      # (B,D) lectures créditées ce pas
         reads_tot += new.sum()
+        # lectures juste après un pas en survitesse : « signature de la triche » (verdict < 20 % plus bas)
         reads_apres_survitesse += (new * (prev_lin > cap_cur).float()).sum()
         # vol LIBRE seulement : un choc contre un rack est une décélération brutale réelle,
         # pas un défaut du modèle d'actionneur. On ne mesure que les drones loin des obstacles.
@@ -163,6 +165,7 @@ def main():
         print(f"fraction lue (gate niveau {env._curr.level})       : {gate_frac:.3f}")
         print(f"fraction lue (gate NOMINAL)         : {nom_frac:.3f}")
     if snapshot is not None:
+        # tiers des entrepôts qui ont le plus lu (« bons ») contre tiers qui ont le moins lu (« mauvais »)
         frac, rw_acc, beh, cover = snapshot
         pas = beh["pas"].clamp_min(1.0)
         ordre = torch.argsort(frac, descending=True)
@@ -172,6 +175,7 @@ def main():
         print(f"{'grandeur':<26}{'bons':>12}{'mauvais':>12}{'écart':>10}")
 
         def cmp(nom, t, unite=""):
+            """Affiche une ligne : moyenne chez les bons, chez les mauvais, et leur rapport."""
             b, m = float(t[bons].mean()), float(t[mauvais].mean())
             ratio = f"×{b / m:.1f}" if abs(m) > 1e-6 else "—"
             print(f"{nom:<26}{b:>12.2f}{m:>12.2f}{ratio:>10}{unite}")
@@ -186,6 +190,8 @@ def main():
         for nom, t in rw_acc.items():
             cmp(f"récompense {nom}", t)
 
+    # verdicts : rien lu sans savoir-faire (< 1 %), accélération réaliste (p99 < 0,5 g en vol
+    # libre ; le modèle d'actionneur permet 3,6 m/s² = 0,37 g), moins de 20 % de lectures après survitesse
     verdicts = []
     if args.policy in ("random", "zero", "forward"):
         ok = (nom_frac is not None and nom_frac < 0.01)

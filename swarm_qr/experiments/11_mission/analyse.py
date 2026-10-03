@@ -1,10 +1,8 @@
-"""Le jugement d'une mission — étape 5. Sans simulateur : il lit mission.json et la carte.
+"""Juge une mission de l'étape 5 après coup, sans simulateur, à partir de mission.json et de la carte du dossier.
 
-  analyse.py --dossier nominale          les cinq vérifications, la lecture, la couverture, les figures
-
-Les cinq vérifications de la porte : aucun blocage, aucun doublon, une dispersion initiale, la
-panne absorbée, une fin propre. Puis ce que la mission a produit : codes lus dans le temps,
-part de l'entrepôt connue, sécurité du vol.
+  analyse.py --dossier eval_nominal      écrit resultats.json et codes_dans_le_temps.png dans le dossier, affiche le bilan
+Les 5 vérifications : aucun blocage, aucun doublon, dispersion au départ, panne absorbée, fin propre ;
+puis la lecture (codes lus dans le temps), la part connue de l'entrepôt, la sécurité du vol et l'obstacle.
 """
 
 from __future__ import annotations
@@ -17,27 +15,28 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[2]          # racine du projet
 sys.path.insert(0, str(ROOT))
 
 from swarm_qr import mapping  # noqa: E402
 from swarm_qr.env.layout import make_layout  # noqa: E402
 
-BLOCAGE_S = 60.0          # un drone vivant sans cible plus longtemps, alors qu'un autre en a
-DOUBLON_M = 2.0           # deux cibles actives plus proches que ça au même instant
-DISPERSION_M = 3.0        # les premières cibles doivent être au moins aussi éloignées
-BOUT_VIDE_SUD, BOUT_VIDE_NORD = 0.70, 0.77     # mesuré à l'étape 7 : les bouts des racks sont vides
+BLOCAGE_S = 60.0          # s : un drone vivant sans cible plus longtemps, alors qu'un autre en a une, est bloqué
+DOUBLON_M = 2.0           # m : deux cibles actives plus proches au même instant forment un doublon
+DISPERSION_M = 3.0        # m : écart minimal entre les premières cibles des drones
+BOUT_VIDE_SUD, BOUT_VIDE_NORD = 0.70, 0.77     # m : bouts des racks sans structure solide (mesuré à l'étape 7), exclus du test « dans un rack »
 
 
 def charge(dossier: Path):
+    """Lit mission.json et la carte finale (carte.npz / carte.json) du dossier ; renvoie (journal, carte)."""
     m = json.loads((dossier / "mission.json").read_text())
     carte = mapping.Carte.charge(dossier / "carte")
     return m, carte
 
 
 def intervalles(agent, t_mort: float = float("inf")) -> list[tuple[float, float, np.ndarray, str]]:
-    """Les cibles actives d'un drone, closes à sa panne ou à sa chute : après, sa zone est à
-    reprendre par les autres, ce n'est pas un doublon."""
+    """Renvoie les cibles actives d'un drone (début, fin, position, genre), coupées à sa panne ou à sa chute.
+    Après cet instant, sa zone est à reprendre par les autres : ce n'est pas un doublon."""
     out = []
     for d in agent["decisions"]:
         fin = min(d.get("fin", float("inf")), t_mort)
@@ -47,12 +46,14 @@ def intervalles(agent, t_mort: float = float("inf")) -> list[tuple[float, float,
 
 
 def instant_de_mort(m, i: int) -> float:
+    """Renvoie l'instant (s) de la panne ou de la chute du drone i, ou l'infini s'il n'en a eu aucune."""
     return min((e["t"] for e in m["evenements"] if e["genre"] in ("panne", "chute") and e.get("drone") == i),
                default=float("inf"))
 
 
 def blocages(m) -> dict:
-    """Un drone vivant qui reste sans cible plus de BLOCAGE_S alors qu'un coéquipier en a une."""
+    """Cherche les blocages : drone sans cible plus de 60 s alors qu'un coéquipier en a une, ou drone qui
+    garde une cible plus de 60 s sans bouger de 30 cm ; renvoie les cas et le verdict."""
     sans = [e for e in m["evenements"] if e["genre"] == "sans_cible"]
     t_fin = m["t_sim_s"]
     longs = []
@@ -78,7 +79,7 @@ def blocages(m) -> dict:
 
 
 def doublons(m) -> dict:
-    """Deux drones avec des cibles actives à moins de DOUBLON_M l'un de l'autre au même instant."""
+    """Cherche les doublons : deux drones dont les cibles actives sont à moins de 2 m l'une de l'autre au même moment."""
     ivs = [(a["i"], iv) for a in m["agents"] for iv in intervalles(a, instant_de_mort(m, a["i"]))]
     cas = []
     for k, (i, (t0, t1, p, g)) in enumerate(ivs):
@@ -92,6 +93,7 @@ def doublons(m) -> dict:
 
 
 def dispersion(m) -> dict:
+    """Vérifie que les premières cibles des drones sont à au moins 3 m les unes des autres ; renvoie les distances (m)."""
     premieres = [np.array(a["decisions"][0]["position"]) for a in m["agents"] if a["decisions"]]
     if len(premieres) < 2:
         return {"distances_m": [], "ok": True}
@@ -100,6 +102,7 @@ def dispersion(m) -> dict:
 
 
 def panne(m) -> dict:
+    """Juge la panne simulée : décisions des autres après la panne, retours dans sa zone (< 4 m), codes avant et à la fin."""
     ev = next((e for e in m["evenements"] if e["genre"] == "panne"), None)
     if ev is None:
         return {"simulee": False, "ok": True}
@@ -120,11 +123,14 @@ def panne(m) -> dict:
 
 
 def fin_propre(m) -> dict:
+    """Vérifie que la mission s'est arrêtée par une règle prévue (plus de cible, budget, inventaire atteint, plus de code nouveau)."""
     propre = m["fin"] in ("plus aucune cible", "budget epuise") or m["fin"].startswith(("inventaire a", "sans code nouveau"))
     return {"fin": m["fin"], "t_sim_s": m["t_sim_s"], "ok": propre}
 
 
 def securite(m, layout) -> dict:
+    """Compte les points de trajectoire dans la structure d'un rack (bouts vides exclus), la distance minimale
+    entre drones (m, aux mêmes instants) et les pas d'attente de priorité."""
     pts = np.array([p[1:] for a in m["agents"] for p in a["trajectoire"]], float)
     dedans = np.zeros(len(pts), dtype=bool)
     for r in layout.racks:
@@ -147,8 +153,8 @@ def securite(m, layout) -> dict:
 
 
 def obstacle(m) -> dict:
-    """L'obstacle apparu en cours de mission : aucun drone ne doit passer dans son emprise après
-    son apparition, et la carte doit l'avoir posé (cases occupées sur son emprise à la fin)."""
+    """Juge l'obstacle apparu en cours de mission : validé si aucun point de trajectoire n'entre dans son emprise
+    après son apparition ; compte aussi les points à moins de 30 cm et la distance minimale (m)."""
     o = m.get("obstacle")
     if not o:
         return {"simule": False, "ok": True}
@@ -157,6 +163,7 @@ def obstacle(m) -> dict:
     if len(pts) == 0:
         return {"simule": True, "ok": True, "points_apres": 0, "dedans": 0, "a_moins_de_30_cm": 0}
     def dans(marge):
+        """Renvoie, pour chaque point, vrai s'il est dans l'emprise de l'obstacle élargie de `marge` (m) et sous son sommet."""
         return ((pts[:, 1] > o["x"][0] - marge) & (pts[:, 1] < o["x"][1] + marge) &
                 (pts[:, 2] > o["y"][0] - marge) & (pts[:, 2] < o["y"][1] + marge) & (pts[:, 3] < o["z"][1] + marge))
     dedans, pres = int(dans(0.0).sum()), int(dans(marge).sum())
@@ -167,10 +174,12 @@ def obstacle(m) -> dict:
 
 
 def lecture(m, carte) -> dict:
+    """Calcule le bilan de lecture : codes lus et inventés, instants (s) des 50/80/90 % de l'inventaire, décisions par genre."""
     vrais = {t["code"]: np.array(t["position"]) for t in m["verite"]}
     codes = np.array(m["codes_par_t"])
     n = len(vrais)
     def t_pour(part):
+        """Renvoie le premier instant (s) où la part `part` des codes est lue, ou None si elle ne l'est jamais."""
         k = np.argmax(codes[:, 1] >= part * n)
         return float(codes[k, 0]) if codes[k, 1] >= part * n else None
     genres = {}
@@ -187,6 +196,7 @@ def lecture(m, carte) -> dict:
 
 
 def figures(m, carte, dossier: Path) -> None:
+    """Dessine codes_dans_le_temps.png : part des codes lus selon le temps simulé, panne marquée en rouge."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -208,6 +218,7 @@ def figures(m, carte, dossier: Path) -> None:
 
 
 def main(dossier: Path) -> None:
+    """Juge la mission du dossier, écrit resultats.json et la figure, puis affiche le bilan à l'écran."""
     m, carte = charge(dossier)
     layout = make_layout(m["seed"])
     res = {"blocages": blocages(m), "doublons": doublons(m), "dispersion": dispersion(m),

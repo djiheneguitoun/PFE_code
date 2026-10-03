@@ -1,9 +1,13 @@
-# MAPPO — politique partagée + critique CENTRAL (utilise l'état global _get_states, 5440).
-# Même flux qu'IPPO ; la seule différence = le critique voit tout l'essaim.
-# Scaffolding pour plus tard (CTDE) : passer --algorithm MAPPO une fois IPPO validé.
+# Réglages skrl de l'agent MAPPO (option --algorithm MAPPO de train_ppo.py et eval.py).
+# MAPPO = politique partagée + critique CENTRAL (utilise l'état global _get_states, 5440 valeurs).
+# Même flux qu'IPPO ; la seule différence = le critique voit tout l'essaim pendant l'entraînement.
+# Préparé pour plus tard (CTDE : entraînement centralisé, exécution décentralisée) :
+# passer --algorithm MAPPO une fois IPPO validé.
+# graine aléatoire (remplaçable par --seed)
 seed: 42
 
 
+# policy = réseau qui choisit l'action ; value = « critique » qui estime les récompenses futures
 models:
   separate: False
   policy:  # gaussian_model
@@ -30,23 +34,27 @@ models:
     output: ONE
 
 
+# mémoire des pas collectés entre deux mises à jour (-1 = taille égale à rollouts)
 memory:
   class: RandomMemory
   memory_size: -1
 
 
-# MAPPO (cf. MAPPO_DEFAULT_CONFIG)
+# MAPPO (cf. MAPPO_DEFAULT_CONFIG) — mêmes valeurs qu'IPPO sauf entropy_loss_scale et l'état partagé
 agent:
   class: MAPPO
+  # pas collectés par environnement avant chaque mise à jour ; puis 5 passes en 4 mini-lots
   rollouts: 24
   learning_epochs: 5
   mini_batches: 4
+  # facteur d'actualisation γ (horizon ≈ 100 pas ≈ 3,3 s) et lissage λ de l'avantage (GAE)
   discount_factor: 0.99
   gae_lambda: 0.95
   learning_rate: 3.0e-04
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.008
+  # normalisation glissante des observations, de l'état global (critique) et des valeurs
   observation_preprocessor: RunningStandardScaler
   observation_preprocessor_kwargs: null
   shared_state_preprocessor: RunningStandardScaler
@@ -58,11 +66,13 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
+  # poids du bonus d'entropie (pousse à explorer) : 0,01 ici, 0,05 pour IPPO
   entropy_loss_scale: 0.01
   value_loss_scale: 2.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
   time_limit_bootstrap: False
+  # même dossier de sortie qu'IPPO, relatif au dossier de lancement (exclu du dépôt par .gitignore)
   experiment:
     directory: "qr_inventory_swarm"
     experiment_name: ""
@@ -70,6 +80,7 @@ agent:
     checkpoint_interval: auto
 
 
+# durée de l'entraînement : nombre total d'appels à env.step (remplaçable par --timesteps)
 trainer:
   class: SequentialTrainer
   timesteps: 100000

@@ -1,4 +1,8 @@
-"""T1.5a (sans rendu) — pose les QR sur les cartons et vérifie."""
+"""Test T1.5a sans rendu : colle un QR sur chaque carton de l'entrepôt et affiche le nombre de QR posés et d'images générées.
+
+Les images vont dans assets/qr/ ; aucun rendu, aucune fenêtre.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/diag/test_qr_attach.py --headless
+"""
 
 import argparse
 
@@ -14,9 +18,11 @@ import sys
 
 import omni.usd
 
+# rend le paquet rl_inventory importable (racine du projet = deux dossiers au-dessus)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from rl_inventory.qr_task import QR_DIR, attach_qr_to_cartons  # noqa: E402
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"

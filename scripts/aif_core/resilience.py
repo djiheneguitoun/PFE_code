@@ -1,3 +1,9 @@
+"""Suivi de la résilience : détection des « stress » et phase de comportement de l'essaim.
+
+Un stress (panne programmée ou pic de surprise) fait passer en phase "recovery" pendant 30 pas (alpha),
+puis en phase "durable". Il est levé après 60 pas d'affilée (beta) avec une carte « rétablie »
+(entropie ≤ 0,44 et surprise ≤ 0,16). planner.py lit la phase pour ajuster les poids de G.
+"""
 from __future__ import annotations
 
 import math
@@ -7,6 +13,7 @@ from typing import Dict, List
 
 @dataclass
 class ResilienceState:
+    """Mémoire du stress en cours : actif ou non, cause, pas de début, pas de rétablissement, événements."""
 
     stress_active: bool = False
     stress_t0: int = -1
@@ -16,6 +23,7 @@ class ResilienceState:
     events: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
+        """Renvoie l'état sous forme de dictionnaire pour le JSON (20 derniers événements seulement)."""
         return {
             "stress_active": self.stress_active,
             "cause": self.cause,
@@ -28,16 +36,19 @@ class ResilienceState:
 
 
 class ResilienceManager:
+    """Gestionnaire de résilience : déclenche les stress, repère les pics de surprise et donne la phase courante."""
 
     def __init__(self, cfg):
+        """Démarre sans stress, avec une moyenne et une variance de la surprise à zéro."""
         self.cfg = cfg
         self.state = ResilienceState()
         self.innov_ema: float = 0.0
         self.innov_var: float = 0.0
 
     def trigger(self, step: int, cause: str) -> None:
+        """Déclenche un stress au pas donné ; si un stress est déjà en cours, note seulement l'événement."""
         if self.state.stress_active:
-            # Déjà en stress : on ajoute juste l'event
+            # Déjà en stress : on note seulement l'événement
             self.state.events.append({
                 "step": step, "type": "stress_addon", "cause": cause,
             })
@@ -53,6 +64,8 @@ class ResilienceManager:
         print(f"  [RESILIENCE] ⚠ STRESS ACTIVATED at step {step}: {cause}")
 
     def update_innovation_stats(self, innov_mean: float) -> bool:
+        """Met à jour la moyenne et la variance glissantes de la surprise ; renvoie vrai si la surprise du pas
+        dépasse moyenne + 2 écarts-types (pic)."""
         err = innov_mean - self.innov_ema
         self.innov_ema += self.cfg.ema_alpha * err
         self.innov_var += self.cfg.ema_alpha * ((err * err) - self.innov_var)
@@ -60,6 +73,8 @@ class ResilienceManager:
         return innov_mean > (self.innov_ema + self.cfg.k_sigma * sigma)
 
     def update_phase(self, step: int, h_mean: float, innov_mean: float) -> None:
+        """Note le premier pas où la carte est « rétablie » (entropie ≤ H_target et surprise ≤ innov_target),
+        puis lève le stress après beta (60) pas rétablis d'affilée."""
         if not self.state.stress_active:
             return
         cfg = self.cfg
@@ -89,6 +104,7 @@ class ResilienceManager:
                       f"(duration={step - self.state.stress_t0} steps)")
 
     def current_phase(self, step: int) -> str:
+        """Renvoie la phase : "normal" sans stress, "recovery" pendant les alpha (30) premiers pas du stress, "durable" ensuite."""
         if not self.state.stress_active:
             return "normal"
         elapsed = step - self.state.stress_t0

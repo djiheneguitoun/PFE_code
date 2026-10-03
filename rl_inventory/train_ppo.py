@@ -1,5 +1,7 @@
-"""Entraîne l'essaim QR multi-drone (skrl). IPPO par défaut, MAPPO en option.
+"""Entraîne l'essaim de 3 drones par apprentissage par renforcement (bibliothèque skrl) : IPPO par défaut, MAPPO en option.
 
+Réglages des agents : agents/skrl_ippo_cfg.yaml et skrl_mappo_cfg.yaml ; skrl écrit ses sorties dans qr_inventory_swarm/.
+Lancement depuis le dossier rl_inventory/ (ou, depuis la racine : bash rl_inventory/launch.sh rl_inventory/train_ppo.py …) :
   bash launch.sh train_ppo.py --headless --algorithm IPPO --num_envs 16
 """
 
@@ -26,12 +28,14 @@ from skrl.utils.runner.torch import Runner
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils import load_cfg_from_registry
 
+# rend le paquet rl_inventory importable (racine du projet = dossier parent de ce fichier)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import rl_inventory  # noqa: F401  enregistre la tâche gym
 from rl_inventory.env import SwarmQREnvCfg  # noqa: E402
 
 
 def main():
+    """Charge les réglages de l'agent (YAML) et de l'arène, applique les options de la ligne de commande, puis lance l'entraînement."""
     entry = {"IPPO": "skrl_ippo_cfg_entry_point", "MAPPO": "skrl_mappo_cfg_entry_point"}[args.algorithm]
     agent_cfg = load_cfg_from_registry(args.task, entry)
     if args.timesteps is not None:

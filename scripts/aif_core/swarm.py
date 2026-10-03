@@ -1,3 +1,9 @@
+"""Chef d'orchestre de l'essaim (SwarmCoordinator), appelé une fois par pas de décision par 12_aif_isaac_sim.py.
+
+Ordre d'un pas : pannes prévues → perception de chaque drone → fusion de toutes les cartes → phase de résilience
+→ échange des cartes → livraison des messages arrivés → choix et exécution des actions (architecture choisie)
+→ métriques du pas, ajoutées à l'historique.
+"""
 from __future__ import annotations
 
 import math
@@ -25,8 +31,10 @@ from .stressors import StressContext, StressorScheduler
 
 
 class SwarmCoordinator:
+    """Coordinateur de l'essaim : enchaîne les étapes d'un pas et garde la carte fusionnée et l'historique."""
 
     def __init__(self, agents: List[DroneAgent], cfg, diag_logger=None):
+        """Prépare la carte fusionnée, la file de messages, le lecteur ns-3, les pannes et l'architecture (cfg.arch)."""
         self.agents = agents
         self.cfg = cfg
         self.diag = diag_logger
@@ -63,9 +71,11 @@ class SwarmCoordinator:
 
     @property
     def active_agents(self) -> List[DroneAgent]:
+        """Renvoie la liste des drones encore en service."""
         return [a for a in self.agents if a.active]
 
     def kill_drone(self, drone_id: int) -> None:
+        """Met un drone hors service tout de suite et déclenche un stress "drone_<id>_lost"."""
         for a in self.agents:
             if a.id == drone_id and a.active:
                 a.land()
@@ -73,6 +83,7 @@ class SwarmCoordinator:
                 return
 
     def step(self) -> None:
+        """Exécute un pas de décision complet : pannes, perception, fusion, phase, échange de cartes, actions, métriques."""
         # 1) stresseurs : peuvent désactiver un drone ou couper un lien
         ctx = StressContext(
             agents=self.agents,
@@ -88,12 +99,14 @@ class SwarmCoordinator:
         if self.diag:
             self.diag.log_step_header(self.step_count + 1)
 
+        # 2) perception : chaque drone lit son lidar et met sa carte à jour
         for a in self.agents:
             a.perceive()
             if self.diag and a.active and a.lidar_diag is not None:
                 angles, ranges, hits = a.lidar_diag
                 self.diag.log_lidar(a.id, a.x, a.y, angles, ranges, hits)
 
+        # 3) surprise moyenne ; un pic déclenche un stress (pics ignorés pendant les 6 premiers pas)
         active = self.active_agents
         innov_mean = (sum(a.last_innovation for a in active) / len(active)) if active else 0.0
         spike = self.resilience.update_innovation_stats(innov_mean)
@@ -103,12 +116,14 @@ class SwarmCoordinator:
         if self.ns3.active:
             self.ns3.read_latencies()
 
+        # 4) carte fusionnée de tous les drones actifs (c'est la carte utilisée par le cloud)
         if active:
             self.fused_belief = fuse_beliefs_logodds(
                 [a.belief for a in active], self.prior_lo,
             )
         h_after = self.fused_belief.mean_entropy()
 
+        # 5) phase de résilience : normal, recovery ou durable
         self.resilience.update_phase(self.step_count, h_after, innov_mean)
         phase = self.resilience.current_phase(self.step_count)
 
@@ -116,12 +131,15 @@ class SwarmCoordinator:
             a.last_action_fresh = False
             a.last_decision_source = "none"
 
+        # 6) échange des cartes, puis livraison des messages arrivés à ce pas
         self.planner.broadcast_beliefs(active, self.step_count)
 
         self._deliver_pending_messages()
 
+        # 7) choix et exécution des actions par l'architecture choisie
         self.planner.plan_step(active, self.fused_belief, phase, self.step_count)
 
+        # 8) métriques du pas
         self.step_count += 1
         metrics_entry = self._compute_step_metrics(active, h_before, h_after, innov_mean, phase)
         self.history.append(metrics_entry)
@@ -144,6 +162,7 @@ class SwarmCoordinator:
                              f"innov_ema={self.resilience.innov_ema:.4f}\n")
 
     def _deliver_pending_messages(self) -> None:
+        """Remet aux drones les messages arrivés à ce pas : cartes des voisins et actions envoyées par le cloud."""
         delivered = self.msg_queue.deliver(self.step_count)
         agents_by_id = {a.id: a for a in self.agents}
         for src, dst, typ, payload in delivered:
@@ -157,6 +176,7 @@ class SwarmCoordinator:
     def _compute_step_metrics(self, active: List[DroneAgent],
                               h_before: float, h_after: float,
                               innov_mean: float, phase: str) -> Dict:
+        """Renvoie les métriques du pas (entropie, couverture, surprise, phase, messages, décisions/min…) pour l'historique."""
         bounds_grid = self.cfg.factory_bounds_grid()
         drone_positions = [(a.x, a.y) for a in active]
 
@@ -208,6 +228,7 @@ class SwarmCoordinator:
         }
 
     def get_full_state(self, obstacles: List[Dict]) -> Dict:
+        """Renvoie l'état complet (environnement, drones, carte fusionnée, métriques, résilience, réseau) pour aif_state.json."""
         eb = self.fused_belief.effective_bounds(self.cfg.occ_threshold)
         q = self.msg_queue.stats()
         ns3_pairs = []

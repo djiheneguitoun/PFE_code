@@ -1,11 +1,8 @@
-"""Le juge de la référence de Pore et al., et ses figures.
+"""Juge un vol de la méthode de référence (Pore et al., 2026) avec les mesures du juge du système, et trace ses figures.
 
-Il mesure les mêmes choses que le juge du système, moins celles qui n'ont pas de sens ici : la
-méthode ne construit aucune carte, donc il n'y a ni couverture ni frontières à noter. À la
-place, la figure de trajectoires est dessinée sur le **plan connu** de l'entrepôt, qui est
-précisément ce que leur système reçoit.
-
-    analyse.py --dossier experiments/13_pore/pore_nominal
+Ni couverture ni frontières : la méthode ne construit pas de carte, elle reçoit le plan de l'entrepôt.
+Lancement (depuis swarm_qr/) : `python experiments/13_pore/analyse.py --dossier experiments/13_pore/pore_nominal`
+Écrit resultats.json, codes_dans_le_temps.png et plan_et_vol.png dans le dossier du vol (il faut mission.json).
 """
 from __future__ import annotations
 
@@ -16,22 +13,25 @@ from pathlib import Path
 
 import numpy as np
 
+# la racine du projet est ajoutée au chemin d'import
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from swarm_qr import pore  # noqa: E402
 from swarm_qr.env.config import INTERIOR  # noqa: E402
 from swarm_qr.env.layout import make_layout  # noqa: E402
 
-BOUT_VIDE_SUD, BOUT_VIDE_NORD = 0.70, 0.77     # mêmes valeurs que le juge du système
-COULEURS = ["#2882ff", "#ff8c00", "#c800c8"]
+BOUT_VIDE_SUD, BOUT_VIDE_NORD = 0.70, 0.77     # m : bouts de rack sans structure (sud, nord), mêmes valeurs que le juge du système
+COULEURS = ["#2882ff", "#ff8c00", "#c800c8"]   # couleur des drones 0, 1 et 2 sur les figures
 
 
 def lecture(m) -> dict:
+    """Renvoie le bilan de lecture : codes lus, inventés, manqués, et instants (s) où 50, 80 et 90 % des codes sont lus (None si jamais)."""
     vrais = {t["code"] for t in m["verite"]}
     codes = np.array(m["codes_par_t"], float)
     n = len(vrais)
 
     def t_pour(part):
+        """Renvoie le premier instant (s) où la part `part` des codes est lue, ou None si elle n'est jamais atteinte."""
         k = int(np.argmax(codes[:, 1] >= part * n))
         return float(codes[k, 0]) if codes[k, 1] >= part * n else None
 
@@ -42,6 +42,7 @@ def lecture(m) -> dict:
 
 
 def securite(m, layout) -> dict:
+    """Compte les points de trajectoire dans la structure d'un rack et mesure la distance minimale entre deux drones au même instant (1,2 m exigés)."""
     pts = np.array([p[1:] for a in m["agents"] for p in a["trajectoire"]], float)
     dedans = np.zeros(len(pts), dtype=bool)
     for r in layout.racks:
@@ -64,9 +65,8 @@ def securite(m, layout) -> dict:
 
 
 def obstacle(m) -> dict:
-    """Le bloc posé en cours de mission. Un drone qui passe au-dessus, avec la garde qu'exige le
-    planificateur, ne le traverse pas : on compte donc séparément les points à hauteur du bloc
-    et les survols, sinon la distance minimale vaut zéro sans qu'il y ait eu de contact."""
+    """Juge le bloc posé en cours de mission : points dedans, distance minimale à hauteur du bloc, et survols comptés
+    à part (un survol avec de la marge n'est pas un contact, mais donnerait une distance nulle)."""
     o = m.get("obstacle")
     if not o:
         return {"simule": False, "ok": True}
@@ -90,6 +90,7 @@ def obstacle(m) -> dict:
 
 
 def plan(m) -> dict:
+    """Renvoie le bilan du plan figé : arrêts prévus, servis, non servis (tous drones), et nombre de passages."""
     return {"arrets_prevus": sum(a["arrets_prevus"] for a in m["agents"]),
             "arrets_servis": sum(a["arrets_servis"] for a in m["agents"]),
             "non_servis": sum(a.get("arrets_non_servis", 0) for a in m["agents"]),
@@ -97,6 +98,7 @@ def plan(m) -> dict:
 
 
 def figure_codes(m, dossier: Path) -> None:
+    """Trace codes_dans_le_temps.png : la part des codes lus au fil du temps, avec la panne ou l'obstacle en pointillé."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -122,8 +124,8 @@ def figure_codes(m, dossier: Path) -> None:
 
 
 def figure_trajectoires(m, layout, dossier: Path) -> None:
-    """Le plan connu de l'entrepôt, les arrêts prévus, et le vol réel par-dessus. C'est
-    l'équivalent de notre carte finale : eux n'en construisent pas, ils reçoivent celle-ci."""
+    """Trace plan_et_vol.png : le plan connu (murs, racks), les arrêts prévus, le vol réel et les codes non lus.
+    C'est l'équivalent de la carte finale du système : la référence reçoit ce plan au lieu de construire une carte."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -170,6 +172,7 @@ def figure_trajectoires(m, layout, dossier: Path) -> None:
 
 
 def main(dossier: Path) -> None:
+    """Lit mission.json du dossier, écrit resultats.json et les deux figures, puis affiche le bilan."""
     m = json.loads((dossier / "mission.json").read_text())
     layout = make_layout(m["seed"])
     res = {"lecture": lecture(m), "securite": securite(m, layout), "obstacle": obstacle(m),

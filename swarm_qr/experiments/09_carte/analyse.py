@@ -1,14 +1,8 @@
-"""Jugement de la carte — étape 4. Aucun simulateur.
+"""Juge la carte de l'étape 4 sans simulateur : compare la carte et le vol enregistrés par banc.py à la vérité.
 
-La patrouille enregistre la carte, la trajectoire vraie et la vérité des panneaux ; ce fichier
-les compare. Le jugement se refait donc en quelques secondes, sans refaire voler le drone.
-
-Les questions sont séparées parce qu'elles n'ont pas les mêmes causes :
-  1. le capteur dit-il la vérité ?                         (verification.json)
-  2. la carte invente-t-elle des obstacles dans les allées ?
-  3. retrouve-t-elle les racks qu'elle a longés ?
-  4. les panneaux lus sont-ils au bon endroit, et ses promesses de lisibilité tiennent-elles ?
-  5. le drone, guidé par sa seule carte, est-il passé sans toucher un rack ?
+Cinq questions séparées : le lidar dit-il vrai, la carte invente-t-elle des obstacles, retrouve-t-elle les
+racks, les codes lus sont-ils bien placés (et la lisibilité promise tenue), le vol a-t-il évité les racks ?
+Écrit resultats.json, comparaison.png, carte_3d.html et .png. Lancement : `python analyse.py [--dossier D]`.
 """
 
 from __future__ import annotations
@@ -19,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+# dossier de ce script ; la racine du projet est ajoutée au chemin d'import
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2]))
 
@@ -26,26 +21,29 @@ from swarm_qr import mapping  # noqa: E402
 from swarm_qr.env.config import INTERIOR, RACKS  # noqa: E402
 from swarm_qr.env.layout import make_layout  # noqa: E402
 
+# vue3d.py est dans ce même dossier (Python ajoute le dossier du script au chemin d'import)
 import vue3d  # noqa: E402
 
-BANDE_VOL = (0.6, 5.5)
-HAUTEUR_PANNEAU = 0.225
+BANDE_VOL = (0.6, 5.5)      # m : tranche de hauteur où le drone vole ; seuls ces points sont jugés
+HAUTEUR_PANNEAU = 0.225     # m : hauteur du QR au-dessus du plateau de l'étagère
 
 
 # Les racks de l'entrepôt n'ont aucune structure solide aux deux bouts de leur emprise : ni
 # montant, ni traverse, ni planche sur 0,70 m au sud et 0,77 m au nord — seulement un panneau
 # de signalisation en haut et un pare-chocs bas. Mesuré par rayons physiques sur les trois racks
 # (étape 7). L'arbitre juge la structure, pas le rectangle du plan.
-BOUT_VIDE_SUD = 0.70
-BOUT_VIDE_NORD = 0.77
+BOUT_VIDE_SUD = 0.70        # m
+BOUT_VIDE_NORD = 0.77       # m
 
 
 def emprise_solide(r):
+    """Renvoie l'emprise solide d'un rack, ((x0, x1), (y0, y1)) : son rectangle sans les bouts vides (0,70 m au sud, 0,77 m au nord)."""
     (x0, x1), (y0, y1) = r.x_bounds, r.y_bounds
     return (x0, x1), (y0 + BOUT_VIDE_SUD, y1 - BOUT_VIDE_NORD)
 
 
 def dans_un_rack(points, layout, marge: float = 0.0, solide: bool = True) -> np.ndarray:
+    """Renvoie, pour chaque point, vrai s'il est dans un rack élargi de `marge` m (emprise solide, ou rectangle complet si solide=False)."""
     p = np.atleast_2d(np.asarray(points, float))
     out = np.zeros(len(p), dtype=bool)
     for r in layout.racks:
@@ -56,18 +54,21 @@ def dans_un_rack(points, layout, marge: float = 0.0, solide: bool = True) -> np.
 
 
 def hors_des_murs(points, marge: float = 0.0) -> np.ndarray:
+    """Renvoie vrai pour les points hors de l'intérieur de l'entrepôt ; avec une marge négative, la bande de |marge| m le long des murs compte aussi."""
     p = np.atleast_2d(np.asarray(points, float))
     return ~((p[:, 0] > INTERIOR.x_min - marge) & (p[:, 0] < INTERIOR.x_max + marge)
              & (p[:, 1] > INTERIOR.y_min - marge) & (p[:, 1] < INTERIOR.y_max + marge))
 
 
 def mediane(xs, digits=1):
+    """Renvoie la médiane arrondie à `digits` chiffres, ou None si la liste est vide."""
     return round(float(np.median(xs)), digits) if len(xs) else None
 
 
 # ---------------------------------------------------------------- les questions
 
 def faux_obstacles(carte, layout) -> dict:
+    """Renvoie le nombre de cases occupées à hauteur de vol et la part tombée en pleine allée (ni rack ni mur) : des obstacles inventés."""
     idx = np.argwhere(carte.occupation > mapping.SEUIL_OCCUPE)
     c = carte.centre(idx) if len(idx) else np.zeros((0, 3))
     c = c[(c[:, 2] > BANDE_VOL[0]) & (c[:, 2] < BANDE_VOL[1])]
@@ -78,10 +79,9 @@ def faux_obstacles(carte, layout) -> dict:
 
 
 def par_etagere(carte, verite) -> dict:
-    """Pour chaque vrai panneau, groupé par étagère : la carte a-t-elle posé un obstacle là où
-    est le carton, a-t-elle marqué l'espace devant comme lisible, et l'a-t-elle lu ? Les racks
-    sont des cadres ouverts : juger des tranches arbitraires compterait du vide comme des
-    obstacles manqués."""
+    """Compte, par étagère, les vrais panneaux dont la carte a posé l'obstacle (carton), marqué l'espace devant
+    comme lisible, et lu le code ; renvoie comptes et parts."""
+    # on juge carton par carton : les racks sont des cadres ouverts, une tranche arbitraire compterait du vide
     lus = {p.code for p in carte.panneaux}
     groupes: dict[str, dict] = {}
     for t in verite:
@@ -103,8 +103,8 @@ def par_etagere(carte, verite) -> dict:
 
 
 def panneaux(carte, verite) -> dict:
-    """Chaque carton porte le même code sur ses deux faces : on compare à la face la plus
-    proche, sinon on mesurerait l'épaisseur du carton au lieu de l'erreur de la carte."""
+    """Compare chaque face lue à la face vraie la plus proche du même code (un carton porte le même code sur ses
+    deux faces) ; renvoie codes lus, codes inventés et erreurs de position en cm."""
     par_code: dict[str, list] = {}
     for t in verite:
         par_code.setdefault(t["code"], []).append(np.array(t["position"], float))
@@ -136,9 +136,8 @@ def panneaux(carte, verite) -> dict:
 
 
 def promesse_de_lisibilite(carte, verite) -> dict:
-    """La couverture affirme « un QR posé là aurait été lu ». On le vérifie sur les vrais
-    panneaux : parmi ceux dont l'espace devant est marqué couvert, combien ont vraiment été
-    lus ? Et parmi les autres ?"""
+    """Vérifie la promesse de la couverture (« un QR posé là aurait été lu ») : part des vrais panneaux lus parmi
+    ceux dont l'espace devant est marqué lisible, et parmi les autres."""
     lus = {p.code for p in carte.panneaux}
     couverts_lus = couverts = non_couverts_lus = non_couverts = 0
     for t in verite:
@@ -159,9 +158,8 @@ def promesse_de_lisibilite(carte, verite) -> dict:
 
 
 def semantique(carte, verite) -> dict:
-    """Le canal sémantique rempli par l'œil appris (étape 7) : les cubes marqués « carton »
-    sont-ils sur de vrais cartons ? Un vrai carton porte un panneau sur chacune de ses deux
-    faces ; un cube à moins de 60 cm d'un panneau est sur un carton ou contre lui."""
+    """Juge les cubes marqués « carton » par le détecteur appris (étape 7) : un cube à plus de 60 cm de tout vrai
+    panneau est faux ; renvoie le nombre de cubes et la part de faux (None s'il n'y en a aucun)."""
     idx = np.argwhere(carte.semantique == mapping.SEM_CARTON)
     if not len(idx):
         return {"cubes_carton": 0, "sur_un_vrai_carton": 0, "part_fausses": None}
@@ -173,9 +171,8 @@ def semantique(carte, verite) -> dict:
 
 
 def pistes(carte, verite, layout=None) -> dict:
-    """Les motifs repérés non lus : à quelle distance du vrai panneau le plus proche ? Une piste
-    à un mètre d'un panneau, dans un rack, est un vrai carton placé grossièrement ; une piste
-    hors de toute emprise de rack est un fantôme."""
+    """Mesure, pour chaque piste (motif repéré mais non lu), la distance au vrai panneau le plus proche (seuils 0,5,
+    1 et 2 m) et compte les pistes hors de toute emprise de rack, qui sont des fantômes."""
     vrais = np.array([t["position"] for t in verite], float)
     d = np.array([np.linalg.norm(vrais - q.position, axis=1).min() for q in carte.pistes])
     n = max(len(d), 1)
@@ -189,7 +186,7 @@ def pistes(carte, verite, layout=None) -> dict:
 
 
 def securite_du_vol(vol, layout) -> dict:
-    """Le drone n'a connu que sa carte. Est-il passé sans entrer dans un rack ?"""
+    """Vérifie que la trajectoire vraie, guidée par la seule carte, n'entre dans aucun rack ; résume aussi les allers (atteints, abandons, recalculs, durées)."""
     traj = np.array([t[1:] for t in vol["trajectoire"]], float)
     dedans = dans_un_rack(traj, layout)
     bout_vide = dans_un_rack(traj, layout, solide=False) & ~dedans
@@ -220,7 +217,7 @@ def securite_du_vol(vol, layout) -> dict:
 
 
 def chemins_sur_la_carte(carte, layout, pas: float = 0.2) -> dict:
-    """Douze trajets d'un coin à l'autre, calculés sur la carte finale."""
+    """Calcule sur la carte finale les 12 trajets entre les 4 coins de l'entrepôt ; renvoie les comptes (trouvés, hors des racks, sur un obstacle connu…)."""
     z = 1.6
     coins = [np.array([INTERIOR.x_min + 1.5, INTERIOR.y_min + 1.5, z]),
              np.array([INTERIOR.x_max - 1.5, INTERIOR.y_max - 1.5, z]),
@@ -258,7 +255,7 @@ def chemins_sur_la_carte(carte, layout, pas: float = 0.2) -> dict:
 # ---------------------------------------------------------------- figures
 
 def figure_comparaison(carte, vol, layout, sortie: Path) -> None:
-    """La carte vue de dessus, avec la vérité par-dessus : racks en rouge, panneaux en points."""
+    """Dessine comparaison.png : la carte vue de dessus, la vérité en rouge, les codes lus en vert, les pistes en orange, le trajet en bleu."""
     import cv2
 
     ech = 6
@@ -266,6 +263,7 @@ def figure_comparaison(carte, vol, layout, sortie: Path) -> None:
     ny = carte.forme[1]
 
     def px(p):
+        """Convertit un point du monde en pixel (colonne, ligne) de l'image vue de dessus."""
         i, j = carte.indice([p])[0][:2]
         return int((i + 0.5) * ech), int((ny - j - 0.5) * ech)
 
@@ -288,6 +286,7 @@ def figure_comparaison(carte, vol, layout, sortie: Path) -> None:
 # ---------------------------------------------------------------- résumé
 
 def main(dossier: Path = HERE) -> None:
+    """Charge la carte et le vol du dossier, répond aux questions, écrit resultats.json et les figures, puis affiche le bilan."""
     carte = mapping.Carte.charge(dossier / "carte")
     vol = json.loads((dossier / "vol.json").read_text())
     layout = make_layout(vol["seed"])

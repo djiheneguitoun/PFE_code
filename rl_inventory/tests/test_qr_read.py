@@ -1,4 +1,7 @@
-"""T1.5b — vérifie le proxy de lecture QR (drone face à un QR, lent -> lu ; sinon non lu)."""
+"""Test T1.5b : vérifie la règle « QR lu » ; un drone immobile à 1,2 m face au QR 0 le lit, un drone resté au départ n'en lit aucun.
+
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/tests/test_qr_read.py --headless
+"""
 
 import argparse
 import math
@@ -22,6 +25,7 @@ from rl_inventory.env import QRInventoryEnv, QRInventoryEnvCfg  # noqa: E402
 
 
 def main():
+    """Place le drone de l'environnement 0 face au QR 0, attend quelques pas, et affiche OK si ce QR est lu et aucun dans l'environnement 1."""
     cfg = QRInventoryEnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = QRInventoryEnv(cfg)

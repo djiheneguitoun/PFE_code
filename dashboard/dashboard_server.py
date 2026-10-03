@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""
-Dashboard Backend Server
-========================
-Reads the CSV files produced by:
-  - 08_wifi_bridge.py   → WiFi RSSI + latency
-  - 09_5g_lena_bridge.py → 5G NR RSSI + latency
+"""Serveur du tableau de bord « WiFi / 5G + exploration » : sert la page web et une API JSON (port 8050).
 
-Serves a REST API consumed by the HTML/JS dashboard.
-
-Usage:
-    python3 dashboard_server.py [--port 8050]
-
-Then open http://localhost:8050 in your browser.
+Relit à chaque requête les fichiers écrits dans /tmp par d'autres scripts : positions des drones,
+mesures WiFi (scripts/08_wifi_bridge.py), mesures 5G (scripts/09_5g_lena_bridge.py) et état de
+l'exploration AIF (scripts/12_aif_isaac_sim.py). Lancement depuis la racine du projet :
+python3 dashboard/dashboard_server.py [--port 8050] [--host 0.0.0.0], puis ouvrir http://localhost:8050
 """
 
 import argparse
@@ -24,26 +17,33 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-# ─── CSV paths (same as in the bridge scripts) ───
+# ─── Fichiers lus (mêmes chemins que dans les scripts qui les écrivent) ───
+# WiFi, écrits par scripts/08_wifi_bridge.py : journal complet (on n'y lit que le numéro de tick)
+# et dernière mesure par paire ; ns3_output.csv = sortie brute du scénario NS-3 WiFi (secours).
 WIFI_LOG_CSV     = "/tmp/drone_bridge_log.csv"
 WIFI_RSSI_CSV    = "/tmp/drone_rssi_latency.csv"
 NS3_OUTPUT_CSV   = "/tmp/ns3_output.csv"
 
+# 5G, écrits par scripts/09_5g_lena_bridge.py : journal, puissance reçue par drone, latence
+# par paire ; drone_5g_metrics.csv = sortie brute du scénario NS-3 5G (secours).
 FIVEG_LOG_CSV    = "/tmp/drone_5g_log.csv"
 FIVEG_RSSI_CSV   = "/tmp/drone_rssi_sionna.csv"
 FIVEG_LAT_CSV    = "/tmp/drone_latency_ns3.csv"
 FIVEG_METRICS    = "/tmp/drone_5g_metrics.csv"
 
+# Positions des drones (scripts 07, 07b ou 12_aif_isaac_sim.py), ancien format d'exploration
+# et état AIF écrit par scripts/12_aif_isaac_sim.py.
 POS_CSV          = "/tmp/drone_positions.csv"
 EXPLORE_JSON     = "/tmp/exploration_state.json"
 AIF_STATE_JSON   = "/tmp/aif_state.json"
 
+# Position (x, y, z) en m de l'antenne 5G (gNB = station de base), la même que dans 09_5g_lena_bridge.py.
 GNB_POSITION = (0.0, 0.0, 6.0)
 
-# ─── Utility readers ───
+# ─── Lecture des fichiers ───
 
 def read_positions(path=POS_CSV):
-    """Read drone positions → {drone_id: {x, y, z}}."""
+    """Renvoie {id_drone: {"x", "y", "z"}} lu dans le CSV des positions (lignes « id,x,y,z » ou « horodatage,id,x,y,z »)."""
     pos = {}
     try:
         with open(path) as f:
@@ -66,8 +66,8 @@ def read_positions(path=POS_CSV):
 
 
 def read_wifi_rssi_csv(path=WIFI_RSSI_CSV):
-    """Read the WiFi RSSI snapshot CSV (overwritten each tick).
-    Format: drone_a,drone_b,rssi_dBm,latency_ms,distance_m,latency_source."""
+    """Renvoie la dernière mesure WiFi de chaque paire (RSSI dBm, latence ms, distance m), réécrite à chaque tick par 08.
+    Les valeurs restent du texte car elles peuvent valoir « blocked » ou « --- » ; liste vide si le fichier manque."""
     pairs = []
     try:
         with open(path) as f:
@@ -87,7 +87,7 @@ def read_wifi_rssi_csv(path=WIFI_RSSI_CSV):
 
 
 def read_wifi_log_tail(path=WIFI_LOG_CSV, max_lines=50):
-    """Read the last N lines of the WiFi log."""
+    """Renvoie les `max_lines` dernières lignes du journal WiFi (sert à retrouver le numéro de tick courant)."""
     lines = []
     try:
         with open(path) as f:
@@ -99,9 +99,8 @@ def read_wifi_log_tail(path=WIFI_LOG_CSV, max_lines=50):
 
 
 def read_5g_rssi_csv(path=FIVEG_RSSI_CSV):
-    """Read the 5G RSSI CSV (appended each tick).
-    Keep only the latest entry per drone.
-    Format: timestamp,tick,drone_id,x,y,z,dist_gnb_m,rssi_gnb_dBm,delay_gnb_ns,status."""
+    """Renvoie (drones, tick) : puissance reçue de l'antenne 5G par chaque drone au dernier tick (None si signal bloqué).
+    Le fichier de 09_5g_lena_bridge.py grossit à chaque tick : seules les lignes du tick le plus récent sont gardées."""
     latest = {}
     max_tick = -1
     try:
@@ -135,9 +134,8 @@ def read_5g_rssi_csv(path=FIVEG_RSSI_CSV):
 
 
 def read_5g_latency_csv(path=FIVEG_LAT_CSV):
-    """Read the 5G latency CSV (appended each tick).
-    Keep only the latest entry per pair.
-    Format: timestamp,tick,drone_a,drone_b,latency_ms,jitter_ms,dist_ab_m,rx_packets."""
+    """Renvoie (paires, tick) : latence et gigue 5G (variation de la latence, en ms), distance et paquets reçus au dernier tick.
+    Lit le fichier écrit par 09_5g_lena_bridge.py."""
     latest = {}
     max_tick = -1
     try:
@@ -167,8 +165,7 @@ def read_5g_latency_csv(path=FIVEG_LAT_CSV):
 
 
 def read_5g_metrics_csv(path=FIVEG_METRICS):
-    """Read the NS-3 5G metrics CSV produced by drone-5g-nr-scenario.
-    Format: drone_a,drone_b,rssi_a_dBm,rssi_b_dBm,latency_ms,jitter_ms,dist_ab_m,rx_packets."""
+    """Renvoie les mesures brutes du scénario NS-3 5G (drone-5g-nr-scenario) : RSSI des deux drones, latence, gigue, paquets."""
     pairs = []
     try:
         with open(path) as f:
@@ -190,8 +187,7 @@ def read_5g_metrics_csv(path=FIVEG_METRICS):
 
 
 def read_ns3_wifi_output(path=NS3_OUTPUT_CSV):
-    """Read the NS-3 WiFi scenario output as backup.
-    Format: time_s,drone_i,drone_j,distance_m,rssi_dbm,latency_ms,..."""
+    """Renvoie la dernière mesure (RSSI, latence, distance) de chaque paire dans la sortie du scénario NS-3 WiFi (secours)."""
     latest = {}
     try:
         with open(path) as f:
@@ -215,12 +211,8 @@ def read_ns3_wifi_output(path=NS3_OUTPUT_CSV):
 
 
 def read_exploration_state(path=EXPLORE_JSON):
-    """Read exploration data.
-
-    Priority:
-      1) New AIF format from /tmp/aif_state.json (script 12)
-      2) Legacy exploration format from /tmp/exploration_state.json
-    """
+    """Renvoie l'état d'exploration à afficher, ou None si aucun fichier n'est lisible.
+    Priorité à /tmp/aif_state.json (écrit par 12_aif_isaac_sim.py), sinon l'ancien /tmp/exploration_state.json."""
     aif_state = _read_json_file(AIF_STATE_JSON)
     if aif_state:
         converted = _convert_aif_state_to_exploration(aif_state)
@@ -234,6 +226,7 @@ def read_exploration_state(path=EXPLORE_JSON):
 
 
 def _read_json_file(path: str) -> Optional[Dict[str, Any]]:
+    """Renvoie le contenu du fichier JSON s'il s'agit d'un dict, sinon None (fichier absent ou en cours d'écriture)."""
     try:
         with open(path) as f:
             data = json.load(f)
@@ -243,7 +236,8 @@ def _read_json_file(path: str) -> Optional[Dict[str, Any]]:
 
 
 def _convert_aif_state_to_exploration(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert /tmp/aif_state.json payload into dashboard exploration format."""
+    """Convertit l'état AIF (grille de probabilités d'occupation fusionnée, drones, métriques) au format de l'onglet Exploration.
+    Une case compte comme « vue » si sa probabilité s'écarte de plus de 0,02 de 0,5 ; renvoie None si la grille est invalide."""
     env = state.get("environment") or {}
     fused = state.get("fused_belief") or []
     drones = state.get("drones") or []
@@ -325,7 +319,7 @@ def _convert_aif_state_to_exploration(state: Dict[str, Any]) -> Optional[Dict[st
     explored_cells = int(sum(visited))
     total_cells = int(len(visited))
 
-    # Use metric when provided; fallback to visited ratio.
+    # Pourcentage exploré : celui calculé par l'AIF s'il existe, sinon la part des cases « vues ».
     if "exploration_pct" in metrics:
         explored_pct = float(metrics.get("exploration_pct", 0.0))
     else:
@@ -358,22 +352,23 @@ def _convert_aif_state_to_exploration(state: Dict[str, Any]) -> Optional[Dict[st
     }
 
 
-# ─── Build API response ───
+# ─── Construction de la réponse /api/data ───
 
 def build_response():
-    """Aggregate all data sources into a single JSON response."""
+    """Rassemble WiFi, 5G, positions et exploration en un seul dict (réponse de /api/data).
+    Utilise les sorties brutes de NS-3 en secours et recalcule les distances avec les positions les plus récentes."""
 
-    # WiFi data
+    # Mesures WiFi
     wifi_pairs = read_wifi_rssi_csv()
     positions = read_positions()
 
-    # Enrich WiFi pairs with positions
+    # Ajoute à chaque paire la position des deux drones
     for p in wifi_pairs:
         a, b = p["drone_a"], p["drone_b"]
         p["pos_a"] = positions.get(a)
         p["pos_b"] = positions.get(b)
 
-    # If no WiFi RSSI CSV, fallback to NS-3 output
+    # Sans fichier du script 08, on se rabat sur la sortie brute du scénario NS-3 WiFi
     if not wifi_pairs:
         ns3_pairs = read_ns3_wifi_output()
         for p in ns3_pairs:
@@ -384,7 +379,7 @@ def build_response():
         wifi_pairs = ns3_pairs
 
     wifi_tick = 0
-    # Try to get tick from log
+    # Numéro de tick = 2e colonne de la dernière ligne du journal WiFi
     log_lines = read_wifi_log_tail(max_lines=1)
     if log_lines and len(log_lines) > 0:
         try:
@@ -393,15 +388,15 @@ def build_response():
         except (ValueError, IndexError):
             pass
 
-    # 5G data
+    # Mesures 5G
     drones_5g, tick_5g_rssi = read_5g_rssi_csv()
     pairs_5g, tick_5g_lat   = read_5g_latency_csv()
 
-    # If no Sionna RSSI CSV, try the NS-3 metrics CSV directly
+    # Sans fichier Sionna du script 09, on repart de la sortie brute du scénario NS-3 5G
     if not drones_5g:
         metrics = read_5g_metrics_csv()
         if metrics:
-            # Build drone list from metrics
+            # Liste des drones tirée des paires mesurées (état supposé « LOS » = en vue directe)
             drone_set = {}
             for m in metrics:
                 for side in ["a", "b"]:
@@ -428,8 +423,8 @@ def build_response():
                     "rx": m["rx"],
                 } for m in metrics]
 
-    # Always update 5G drone positions from the live positions CSV
-    # (RSSI CSV positions may be stale if the bridge hasn't run recently)
+    # Positions 5G remplacées par celles du fichier de positions (plus fraîches si le script 09
+    # ne tourne plus) ; la distance à l'antenne est recalculée
     for d in drones_5g:
         live_pos = positions.get(d["id"])
         if live_pos:
@@ -440,7 +435,7 @@ def build_response():
                 sum((live_pos[k] - g) ** 2 for k, g in zip(["x", "y", "z"], GNB_POSITION))
             ), 2)
 
-    # Also update pair distances from live positions
+    # Distances entre drones recalculées de la même façon
     for p in pairs_5g:
         pa = positions.get(p["drone_a"])
         pb = positions.get(p["drone_b"])
@@ -451,7 +446,7 @@ def build_response():
 
     tick = max(wifi_tick, tick_5g_rssi, tick_5g_lat, 0)
 
-    # Exploration data
+    # Données d'exploration (AIF ou ancien format)
     exploration = read_exploration_state()
     if exploration:
         tick = max(tick, exploration.get("step", 0))
@@ -472,18 +467,21 @@ def build_response():
     }
 
 
-# ─── HTTP Server ───
+# ─── Serveur HTTP ───
 
+# Dossier servi au navigateur (index.html, app.js, style.css) : celui de ce fichier.
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
-    """Serves static files from dashboard/ and the /api/data endpoint."""
+    """Gestionnaire HTTP : sert les fichiers de dashboard/ et les routes /api/data et /api/health."""
 
     def __init__(self, *args, **kwargs):
+        """Prépare le serveur de fichiers en le limitant au dossier dashboard/."""
         super().__init__(*args, directory=DASHBOARD_DIR, **kwargs)
 
     def do_GET(self):
+        """Répond à une requête GET : JSON pour /api/data et /api/health, fichier statique sinon."""
         parsed = urlparse(self.path)
 
         if parsed.path == '/api/data':
@@ -491,10 +489,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         elif parsed.path == '/api/health':
             self.send_json({"status": "ok", "time": time.time()})
         else:
-            # Serve static files
+            # Fichier statique (index.html, app.js, style.css…)
             super().do_GET()
 
     def send_json(self, data):
+        """Envoie `data` en JSON (code 200, sans cache, lisible depuis une autre origine)."""
         body = json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -505,12 +504,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        # Quieter logging — only log API calls, not static assets
+        """N'affiche dans le terminal que les requêtes vers /api/ (pas celles des fichiers statiques)."""
         if '/api/' in str(args[0]) if args else False:
             super().log_message(format, *args)
 
 
 def main():
+    """Lit les options (--port, défaut 8050 ; --host, défaut 0.0.0.0), affiche les fichiers surveillés et sert jusqu'à Ctrl+C."""
     parser = argparse.ArgumentParser(description="Dashboard Server for Drone Simulation")
     parser.add_argument("--port", type=int, default=8050, help="HTTP port (default: 8050)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")

@@ -1,17 +1,9 @@
-"""Banc de mesure de l'enveloppe de lecture — étape 2.
+"""Banc de l'étape 2 (Isaac Sim) : photographie un QR depuis des milliers de poses connues.
 
-Quatre modes, un seul format de sortie. Chaque image est enregistrée avec la pose que la caméra
-occupe réellement, relue dans le simulateur, jamais avec la pose commandée.
-
-  banc.py --mode optique     2000 poses au hasard, caméra libre, sans drone
-  banc.py --mode sans-qr     300 poses avec tous les panneaux masqués (fausses alertes)
-  banc.py --mode vol         12 poses tenues par le vrai drone, 15 images chacune
-  banc.py --mode traversee   le drone longe le rack à 4 vitesses, capture en continu
-
-Avant toute mesure, le banc vérifie sa propre chaîne : la calibration de la caméra doit
-correspondre au calcul, le retard du rendu est mesuré (pas supposé), et une lecture à distance
-connue doit tomber juste. Si un contrôle échoue, le banc s'arrête au lieu de produire des
-chiffres faux.
+Modes : optique (caméra seule, poses au hasard), sans-qr (mêmes poses, QR cachés), vol (12 poses
+tenues par le drone), traversee (le drone longe le rack à 4 vitesses). Chaque image est notée avec
+la pose VRAIE de la caméra dans poses_<nom>.jsonl ; le banc s'arrête si un auto-contrôle échoue.
+Lancé par campagne.sh ; seul : DISPLAY=:1 $PY banc.py --mode optique --poses 2000
 """
 
 from __future__ import annotations
@@ -37,6 +29,7 @@ parser.add_argument("--graine-tirage", type=int, default=20260901)
 parser.add_argument("--nom", default=None, help="nom de la campagne (fichiers de sortie)")
 args, _ = parser.parse_known_args()
 
+# Sorties, écrites dans ce dossier : images_<nom>/, poses_<nom>.jsonl et meta_<nom>.json.
 NOM = args.nom or args.mode.replace("-", "_")
 SORTIE = HERE / f"images_{NOM}"
 MANIFESTE = HERE / f"poses_{NOM}.jsonl"
@@ -64,34 +57,37 @@ from swarm_qr.env.pilot import Pilot  # noqa: E402
 from swarm_qr.experiments import _img  # noqa: E402
 from swarm_qr.experiments._vol import transit  # noqa: E402
 
-# --- geometrie du tirage (mode optique) ---
-D_MIN, D_MAX = 0.45, 8.0
-ALPHA_MAX = 75.0
-VISEE_H, VISEE_V = 24.0, 17.0
-ROULIS_SIGMA, ROULIS_MAX = 3.0, 8.0
-MARGE_MUR = 0.60
+# --- géométrie du tirage (modes optique et sans-qr) ---
+D_MIN, D_MAX = 0.45, 8.0            # m : distance caméra-panneau, tirée selon une loi log-uniforme
+ALPHA_MAX = 75.0                    # degrés : angle maximal entre la visée et la normale du panneau
+VISEE_H, VISEE_V = 24.0, 17.0       # degrés : décentrage maximal du panneau dans l'image (visée imparfaite)
+ROULIS_SIGMA, ROULIS_MAX = 3.0, 8.0  # degrés : roulis de la caméra (écart-type, plafond)
+MARGE_MUR = 0.60                    # m : distance minimale d'une pose tirée aux murs et aux racks
 
 # --- vol ---
-FLY_ALT = 1.6
-CAM_LATERAL = CAMERAS.side_offset
-CAM_BAS = CAMERAS.below
-DEGAGEMENT_MIN = 0.50     # helices 0,26 m + oscillation mesuree 0,21 m + marge
+FLY_ALT = 1.6                       # m : altitude de décollage
+CAM_LATERAL = CAMERAS.side_offset   # m : la caméra gauche est à 10 cm du centre du drone...
+CAM_BAS = CAMERAS.below             # m : ...et 11 cm plus bas
+DEGAGEMENT_MIN = 0.50     # m : écart minimal au rack = hélices 0,26 m + oscillation mesurée 0,21 m + marge
+# Les 12 poses tenues en vol : (angle à la normale en degrés, distance caméra-panneau en m).
 POSES_VOL = ([(0.0, d) for d in (0.90, 1.20, 1.60, 2.10, 2.70, 3.50)]
              + [(30.0, 1.20), (30.0, 2.10), (30.0, 3.50),
                 (-45.0, 1.20), (-45.0, 2.10), (-45.0, 3.50)])
-IMAGES_PAR_POSE = 15
+IMAGES_PAR_POSE = 15                # images prises à chaque pose tenue
 
-# --- traversee ---
-VITESSES = (0.1, 0.3, 0.6, 1.0)
-PHYS_PAR_IMAGE = 160      # 0,2 s simulee entre deux images = la cadence de mission (5/s)
-DEMI_FENETRE = 4.5        # la traversee couvre la zone lisible, pas les 20 m du rack
+# --- traversée ---
+VITESSES = (0.1, 0.3, 0.6, 1.0)     # m/s : vitesses des 4 traversées
+# 160 étapes de physique entre deux images = 0,2 s simulée, la cadence de mission (5 images/s).
+PHYS_PAR_IMAGE = 160
+# m : la traversée couvre 4,5 m de part et d'autre du panneau (la zone lisible), pas les 20 m du rack.
+DEMI_FENETRE = 4.5
 
 
 # ---------------------------------------------------------------- outils communs
 
 def quat_visee(position, cible, bh_deg=0.0, bv_deg=0.0, roulis_deg=0.0):
-    """Caméra placée en `position`, visant `cible` (convention monde : avant=+X, haut=+Z).
-    `bh`/`bv` décentrent la cible dans l'image, `roulis` tourne l'image sur elle-même."""
+    """Renvoie l'orientation (quaternion w, x, y, z) d'une caméra placée en `position` qui vise `cible`.
+    `bh_deg`/`bv_deg` décentrent la cible dans l'image et `roulis_deg` tourne l'image (degrés)."""
     avant = np.array(cible, float) - np.array(position, float)
     avant /= max(np.linalg.norm(avant), 1e-9)
     haut_ref = np.array([0.0, 0.0, 1.0])
@@ -107,7 +103,7 @@ def quat_visee(position, cible, bh_deg=0.0, bv_deg=0.0, roulis_deg=0.0):
 
 
 def choisit_cible(scene):
-    """Un panneau tourné vers +X, à hauteur de vol."""
+    """Renvoie le panneau tourné vers +X, entre 1,30 et 1,90 m de haut, le plus proche de 1,60 m."""
     bons = [t for t in scene.tags if t.normal[0] > 0.9 and 1.30 < t.position[2] < 1.90]
     if not bons:
         raise RuntimeError("aucun panneau utilisable")
@@ -115,6 +111,8 @@ def choisit_cible(scene):
 
 
 def pose_reelle(cam, tag):
+    """Relit la pose vraie de la caméra ; renvoie position, quaternion, distance au panneau (m)
+    et angle entre la visée et la normale du panneau (degrés)."""
     p, q = cam.get_world_pose()
     p = np.asarray(p, dtype=float)
     v = p - np.array(tag.position, float)
@@ -125,14 +123,16 @@ def pose_reelle(cam, tag):
 
 
 class Journal:
-    """Écrit chaque mesure dès qu'elle existe : un plantage tardif ne détruit rien."""
+    """Journal d'une campagne : écrit chaque image et sa pose aussitôt, pour qu'un plantage ne perde rien."""
 
     def __init__(self):
+        """Crée le dossier images_<nom>/ et ouvre poses_<nom>.jsonl en écriture."""
         SORTIE.mkdir(parents=True, exist_ok=True)
         self.fichier = MANIFESTE.open("w", buffering=1)
         self.n = 0
 
     def note(self, cam, tag, image_bgr, run="", indice=None, vitesse=0.0, atteint=True):
+        """Enregistre l'image (si elle existe) et une ligne JSON : pose vraie, distance, angle, vitesse."""
         p, q, D, alpha = pose_reelle(cam, tag)
         nom = None
         if image_bgr is not None:
@@ -150,6 +150,7 @@ class Journal:
         self.n += 1
 
     def clot(self, K, extra=None):
+        """Ferme le journal et écrit meta_<nom>.json (mode, graines, calibration K, nombre de mesures)."""
         self.fichier.close()
         meta = {"mode": args.mode, "seed_entrepot": args.seed,
                 "graine_tirage": args.graine_tirage,
@@ -162,7 +163,8 @@ class Journal:
 # ---------------------------------------------------------------- auto-verification
 
 def verifie_calibration(cam) -> np.ndarray:
-    """La calibration relue doit correspondre au calcul ; sinon toute distance serait fausse."""
+    """Vérifie que la focale relue (fx = fy) égale la valeur calculée à 1 pixel près, sinon toute
+    distance serait fausse et le banc s'arrête ; renvoie la matrice de calibration K."""
     K = np.asarray(cam.get_intrinsics_matrix(), dtype=float)
     fx_attendu = CAMERAS.side_width / (2.0 * math.tan(math.radians(CAMERAS.fov_deg) / 2.0))
     if abs(K[0, 0] - fx_attendu) > 1.0 or abs(K[0, 0] - K[1, 1]) > 0.1:
@@ -172,11 +174,12 @@ def verifie_calibration(cam) -> np.ndarray:
 
 
 def mesure_retard(world, cam, tag, K) -> int:
-    """Mesure le retard du rendu au lieu de le supposer : saute de 1,5 m à 3 m et compte les
-    rendus avant que l'image reflète la nouvelle distance."""
+    """Mesure le retard du rendu : vérifie la lecture à 1,5 m (à 8 cm près), saute à 3 m et renvoie
+    le nombre de rendus avant que l'image montre 3 m ; arrêt s'il dépasse la marge RENDER_LAG."""
     cote = P.taille_code(tag.size)
 
     def distance_vue():
+        """Lit le QR visé avec zxing ; renvoie la distance (m) déduite de sa taille en pixels, ou None."""
         import cv2
 
         img = cam.get_rgb()
@@ -219,6 +222,8 @@ def mesure_retard(world, cam, tag, K) -> int:
 # ---------------------------------------------------------------- modes sans drone
 
 def hors_zone(p, layout) -> bool:
+    """Renvoie vrai si le point est interdit : à moins de 60 cm d'un mur ou d'un rack, ou plus bas
+    que 0,4 m ou plus haut que le plafond de vol."""
     if not (INTERIOR.x_min + MARGE_MUR < p[0] < INTERIOR.x_max - MARGE_MUR
             and INTERIOR.y_min + MARGE_MUR < p[1] < INTERIOR.y_max - MARGE_MUR
             and 0.4 < p[2] < INTERIOR.z_fly_max):
@@ -232,8 +237,8 @@ def hors_zone(p, layout) -> bool:
 
 
 def tire_pose(rng, tag, layout):
-    """Distance et angle sont recalculés sur la pose finale : le décalage vertical les modifie,
-    et enregistrer les valeurs tirées fausserait l'analyse."""
+    """Tire au hasard une pose de caméra devant le panneau (distance, angle, décentrage, roulis) ;
+    renvoie (position, bh, bv, roulis), angles en degrés, ou None après 200 essais ratés."""
     n = np.array(tag.normal, float)
     t = np.cross(np.array([0.0, 0.0, 1.0]), n)
     t /= max(np.linalg.norm(t), 1e-9)
@@ -244,6 +249,8 @@ def tire_pose(rng, tag, layout):
         signe = 1.0 if rng.random() < 0.5 else -1.0
         pos = centre + D0 * (math.cos(a0) * n + signe * math.sin(a0) * t)
         pos[2] += float(rng.uniform(-0.30, 0.30)) * min(D0, 2.0)
+        # Distance et angle sont recalculés sur la pose finale : le décalage vertical les change,
+        # et enregistrer les valeurs tirées fausserait l'analyse.
         v = pos - centre
         D = float(np.linalg.norm(v))
         cos_a = float(np.dot(v / max(D, 1e-9), n))
@@ -262,6 +269,7 @@ def tire_pose(rng, tag, layout):
 
 
 def masque_tous_les_panneaux(stage) -> int:
+    """Rend invisibles tous les panneaux QR de la scène ; renvoie leur nombre (228 dans l'entrepôt 9033)."""
     from pxr import UsdGeom
 
     n = 0
@@ -273,6 +281,8 @@ def masque_tous_les_panneaux(stage) -> int:
 
 
 def mode_optique(sans_qr: bool) -> None:
+    """Lance les modes optique et sans-qr : une caméra seule, sans drone, photographie le panneau
+    depuis --poses poses tirées au hasard (QR cachés si `sans_qr`)."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=False, n_drones=0)
     tag = choisit_cible(scene)
@@ -316,24 +326,27 @@ def mode_optique(sans_qr: bool) -> None:
 # ---------------------------------------------------------------- modes en vol
 
 def cap_perpendiculaire(tag) -> float:
+    """Renvoie le cap (rad) qui aligne le drone le long du rack, caméra gauche face au panneau."""
     n = np.array(tag.normal, float)
     return math.atan2(n[1], n[0]) + math.pi / 2.0
 
 
 def cap_vers_panneau(cible_cam, tag) -> float:
-    """Pour les poses en biais : avec un cap perpendiculaire, le panneau sortirait du champ et
-    on mesurerait un échec de cadrage au lieu d'un échec d'angle."""
+    """Renvoie le cap (rad) qui pointe la caméra gauche vers le panneau ; sert aux poses en biais, où
+    un cap perpendiculaire sortirait le panneau du champ (on mesurerait le cadrage, pas l'angle)."""
     v = np.array(tag.position, float) - np.array(cible_cam, float)
     return math.atan2(v[1], v[0]) - math.pi / 2.0
 
 
 def consigne_drone(cible_cam, psi):
+    """Renvoie la position du drone qui amène sa caméra gauche (10 cm sur le côté, 11 cm plus bas)
+    en `cible_cam`."""
     lateral = np.array([-math.sin(psi), math.cos(psi), 0.0]) * CAM_LATERAL
     return np.array(cible_cam, float) - lateral + np.array([0.0, 0.0, CAM_BAS])
 
 
 def degagement(p, layout) -> float:
-    """Distance du point au rack le plus proche, dans les allées."""
+    """Renvoie la distance (m) entre le point et la face du rack le plus proche qu'il longe (99 si aucun)."""
     d = 99.0
     for r in layout.racks:
         y0, y1 = r.y_bounds
@@ -343,10 +356,14 @@ def degagement(p, layout) -> float:
 
 
 def demarre_vol(scene):
+    """Connecte, arme et fait décoller le drone 0 à 1,6 m ; renvoie le pilote et deux fonctions qui
+    lisent la position et le cap vrais du drone."""
     def get_pos():
+        """Renvoie la position vraie du drone 0 (m)."""
         return scene.drones[0].state.position
 
     def get_yaw():
+        """Renvoie le cap vrai du drone 0 (rad)."""
         return float(Rotation.from_quat(scene.drones[0].state.attitude).as_euler("ZYX")[0])
 
     pilot = Pilot(scene.world, 0)
@@ -356,7 +373,8 @@ def demarre_vol(scene):
 
 
 def verifie_en_vol(scene, pilot, get_pos, get_yaw, tag, K) -> None:
-    """Aplomb en vol : après un premier goto, la distance vue doit coller à la pose vraie."""
+    """Vérifie en vol, à 2 m du panneau, que la distance lue dans l'image égale la distance vraie
+    à 10 cm près ; sinon arrête le banc."""
     cible_cam = np.array(tag.position, float) + np.array(tag.normal, float) * 2.0
     psi = cap_vers_panneau(cible_cam, tag)
     pilot.goto(consigne_drone(cible_cam, psi), psi, get_pos, tol=0.25,
@@ -371,6 +389,7 @@ def verifie_en_vol(scene, pilot, get_pos, get_yaw, tag, K) -> None:
 
 
 def mode_vol() -> None:
+    """Lance le mode vol : le drone tient les 12 poses de POSES_VOL et prend 15 images à chacune."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=True, n_drones=1)
     scene.world.reset()
@@ -417,6 +436,8 @@ def mode_vol() -> None:
 
 
 def mode_traversee() -> None:
+    """Lance le mode traversée : le drone longe le panneau à 1,2 m de distance, à 0,1 puis 0,3, 0,6
+    et 1 m/s, en prenant une image toutes les 0,2 s."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=True, n_drones=1)
     scene.world.reset()
@@ -431,7 +452,7 @@ def mode_traversee() -> None:
             psi, get_pos, get_yaw)
     verifie_en_vol(scene, pilot, get_pos, get_yaw, tag, K)
 
-    # Capture a la cadence de mission, sans attendre le rendu : chaque image est en retard d'un
+    # Capture à la cadence de mission, sans attendre le rendu : chaque image est en retard d'un
     # nombre constant de rendus, la pose est notée à chaque rendu, et l'analyse retrouve ce
     # décalage puis associe chaque image à sa vraie pose.
     journal = Journal()
@@ -466,6 +487,7 @@ def mode_traversee() -> None:
     journal.clot(K)
 
 
+# Valeur de --mode -> fonction lancée ; le simulateur est toujours fermé à la fin, même après une erreur.
 MODES = {"optique": lambda: mode_optique(False), "sans-qr": lambda: mode_optique(True),
          "vol": mode_vol, "traversee": mode_traversee}
 

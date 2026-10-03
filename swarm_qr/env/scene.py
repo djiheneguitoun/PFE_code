@@ -1,10 +1,8 @@
-"""Assemblage de la scène sur la base Pegasus + ArduPilot SITL.
+"""Construit la scène Isaac Sim d'un entrepôt : bâtiment (chargé par son adresse web, gardé en cache), racks placés
+selon la graine, cartons gardés, QR collés, drones Iris de Pegasus avec trois caméras et un lidar chacun.
 
-Entrepôt chargé par URL directe (cache local), racks déplacés selon la graine, cartons
-filtrés, QR collés, drones Iris de Pegasus, caméras natives d'Isaac Sim.
-
-S'importe uniquement après le démarrage de SimulationApp. Aucune dépendance à Isaac Lab :
-la World de Pegasus et le SimulationContext d'Isaac Lab sont incompatibles.
+À importer seulement après le démarrage de SimulationApp ; pas d'Isaac Lab, incompatible avec le monde (World) de Pegasus.
+Utilisé par mission.py, pore_mission.py et les expériences : scene = build(make_layout(graine), with_sitl=True).
 """
 
 from __future__ import annotations
@@ -32,25 +30,25 @@ from . import qr_tags
 from .config import CAMERAS, DRONES, LIDAR, QR_CFG, RACKS, WAREHOUSE_PRIM, WAREHOUSE_USD
 from .layout import Layout, select_boxes
 
-DRONE_PRIM = "/World/Drone_{:02d}"
-GROUND_Z = 0.07
+DRONE_PRIM = "/World/Drone_{:02d}"   # chemin du drone dans la scène : Drone_00, Drone_01…
+GROUND_Z = 0.07   # m : altitude de pose des drones au départ
 
 # Le rendu a jusqu'à 4 images de retard sur la position réelle : 10 rendus garantissent une
 # image à jour. Chaque rendu est précédé d'un peu de physique, sans quoi le pilote ArduPilot,
 # qui tourne dans un processus séparé, cesse d'être alimenté et perd le contrôle du drone.
-RENDER_LAG = 10
-PHYSICS_BETWEEN_RENDERS = 40
+RENDER_LAG = 10   # rendus
+PHYSICS_BETWEEN_RENDERS = 40   # pas de physique (1/800 s chacun) avant chaque rendu
 
 def _cam_orientation(yaw_deg: float) -> np.ndarray:
-    """Orientation locale d'une caméra visant à `yaw_deg` du cap du drone. La classe Camera
-    interprète l'orientation en convention monde (avant = +X, haut = +Z) et fait elle-même la
-    conversion vers le repère USD : un simple lacet suffit."""
+    """Renvoie le quaternion (w, x, y, z) d'une caméra tournée de `yaw_deg` degrés par rapport à l'avant du drone.
+    Un simple lacet suffit : Camera lit l'orientation en convention monde (avant +X, haut +Z) et convertit elle-même pour USD."""
     h = math.radians(yaw_deg) / 2.0
     return np.array([math.cos(h), 0.0, 0.0, math.sin(h)])
 
 
 @dataclass
 class Scene:
+    """La scène construite : monde, entrepôt tiré, drones, caméras et lidar de chaque drone, QR posés, cartons gardés."""
     world: World
     layout: Layout
     drones: list[Multirotor]
@@ -61,7 +59,7 @@ class Scene:
     _lidar_api: object = None
 
     def finalize(self) -> None:
-        """À appeler une fois, après world.reset() : branche les caméras au rendu."""
+        """Branche les caméras des drones au rendu et règle leur optique ; à appeler une fois, après world.reset()."""
         for per_drone in self.cameras:
             for cam in per_drone.values():
                 cam.initialize()
@@ -70,32 +68,28 @@ class Scene:
                 cam.set_clipping_range(CAMERAS.near, CAMERAS.far)
 
     def positions(self) -> np.ndarray:
+        """Renvoie les positions vraies (m) de tous les drones, une ligne par drone."""
         return np.array([d.state.position for d in self.drones])
 
     def position(self, drone: int = 0) -> np.ndarray:
+        """Renvoie la position vraie (m) du drone dans le monde."""
         return np.array(self.drones[drone].state.position, float)
 
     def yaw(self, drone: int = 0) -> float:
+        """Renvoie le cap vrai (rad) du drone dans le monde."""
         return float(Rotation.from_quat(self.drones[drone].state.attitude).as_euler("ZYX")[0])
 
     def velocity(self, drone: int = 0) -> np.ndarray:
+        """Renvoie la vitesse vraie (m/s) du drone dans le monde."""
         return np.array(self.drones[drone].state.linear_velocity, float)
 
     def rgb(self, name: str, drone: int = 0) -> np.ndarray:
+        """Renvoie la dernière image de la caméra `name` du drone, sans attendre une image à jour."""
         return self.cameras[drone][name].get_rgb()
 
     def lidar(self, drone: int = 0):
-        """Un tour de lidar en repère monde : directions unitaires et distance par rayon, la
-        distance valant l'infini quand rien n'a été touché.
-
-        Deux pièges du capteur, tous deux silencieux :
-        - il ne se met à jour qu'au **rendu** : lire après des pas de physique seuls renvoie un
-          tour entier de zéros — on lève une erreur plutôt que de remplir la carte de vide ;
-        - son angle vertical se compte **vers le bas** : un « zénith » de −15 degrés pointe
-          15 degrés vers le haut. Sans le signe, la carte se remplit tête-bêche.
-        Les angles sont donnés dans le repère du capteur ; on les tourne avec l'attitude du
-        drone, sans quoi la carte se remplirait de travers dès qu'il tourne.
-        """
+        """Renvoie un tour de lidar dans le repère du monde : directions unitaires et distance par rayon (infini si rien n'est touché).
+        Pièges traités : le capteur ne se met à jour qu'au rendu (erreur s'il est muet) et son angle vertical se compte vers le bas."""
         from omni.isaac.range_sensor import _range_sensor
 
         if self._lidar_api is None:
@@ -110,21 +104,23 @@ class Scene:
         az = np.asarray(self._lidar_api.get_azimuth_data(chemin), dtype=float)
         zen = np.asarray(self._lidar_api.get_zenith_data(chemin), dtype=float)
         A, Z = np.meshgrid(az, zen, indexing="ij")
+        # « zénith » compté vers le bas : −15° pointe 15° vers le haut, d'où le signe moins sur z
         local = np.stack([np.cos(Z) * np.cos(A), np.cos(Z) * np.sin(A), -np.sin(Z)], axis=-1)
+        # directions tournées avec l'attitude du drone, sinon la carte serait de travers dès qu'il tourne
         R = Rotation.from_quat(self.drones[drone].state.attitude).as_matrix()
         dirs = local.reshape(-1, 3) @ R.T
         portees[portees >= LIDAR.max_range - 1e-3] = np.inf
         return dirs, portees
 
     def capture(self, name: str, drone: int = 0, settle: int = RENDER_LAG) -> np.ndarray:
-        """Image à jour d'une caméra du drone. Voir `capture_camera` pour les pièges traités."""
+        """Renvoie une image à jour de la caméra `name` du drone (voir capture_camera)."""
         return capture_camera(self.world, self.cameras[drone][name], settle)
 
 
 def capture_camera(world: World, cam: Camera, settle: int = RENDER_LAG,
                    physique_entre_rendus: int = PHYSICS_BETWEEN_RENDERS) -> np.ndarray:
-    """Image à jour d'une caméra. `physique_entre_rendus=0` est réservé aux scènes sans drone
-    SITL : il n'y a alors personne à alimenter et la capture est quatre fois plus rapide."""
+    """Renvoie une image à jour de la caméra : par défaut 10 rendus, précédés chacun de 40 pas de physique ; erreur après 120 rendus vides.
+    `physique_entre_rendus=0` est réservé aux scènes sans drone SITL : personne à alimenter, capture 4 fois plus rapide."""
     for _ in range(settle):
         for _ in range(physique_entre_rendus):
             world.step(render=False)
@@ -138,6 +134,7 @@ def capture_camera(world: World, cam: Camera, settle: int = RENDER_LAG,
 
 
 def _add_light(stage) -> None:
+    """Ajoute une lumière ambiante en dôme, d'intensité 2500, qui éclaire tout l'entrepôt."""
     from pxr import UsdLux
 
     light = UsdLux.DomeLight.Define(stage, "/World/Light")
@@ -145,6 +142,7 @@ def _add_light(stage) -> None:
 
 
 def _place_racks(stage, layout: Layout) -> None:
+    """Déplace chaque rack du fichier USD jusqu'à la position tirée pour cette graine, en décalant sa translation."""
     from pxr import Gf, UsdGeom
 
     for placement in layout.racks:
@@ -163,8 +161,8 @@ def _place_racks(stage, layout: Layout) -> None:
 
 
 def _find_boxes(stage) -> list[str]:
-    """Le prim le plus haut dont le nom correspond : ses enfants portent souvent le même nom,
-    les compter aussi doublerait cartons et QR."""
+    """Renvoie, triés, les chemins des cartons (objets dont le nom contient « SM_CardBox »), en ne gardant que l'objet
+    le plus haut : ses enfants portent souvent le même nom, les compter doublerait cartons et QR."""
     from pxr import UsdGeom
 
     needle = QR_CFG.box_name_filter.lower()
@@ -182,10 +180,8 @@ def _find_boxes(stage) -> list[str]:
 
 
 def _hide(stage, paths) -> None:
-    """Désactive les cartons non retenus. Les rendre seulement invisibles laissait leur
-    collider en place : le lidar et les rayons de contrôle butaient sur des cartons que la
-    caméra ne voyait pas (mesuré à l'étape 7 : neuf cartons cachés sur neuf arrêtaient les
-    rayons). Un prim désactivé sort de la composition : ni rendu, ni physique."""
+    """Désactive les cartons non retenus : ni rendu, ni physique. Seulement invisibles, ils gardaient leur forme de collision
+    et arrêtaient encore les rayons du lidar (étape 7 : neuf cartons cachés sur neuf)."""
     for p in paths:
         prim = stage.GetPrimAtPath(p)
         if prim and prim.IsValid():
@@ -193,8 +189,8 @@ def _hide(stage, paths) -> None:
 
 
 def _orientation_monde(yaw_deg: float, plongee_deg: float) -> np.ndarray:
-    """Quaternion (w, x, y, z) en convention monde de la classe Camera (avant = +X, haut = +Z) :
-    un lacet autour de Z, puis une plongée vers le bas autour de Y."""
+    """Renvoie le quaternion (w, x, y, z) d'une caméra fixe : lacet `yaw_deg` autour de z, puis plongée `plongee_deg`
+    vers le bas (degrés), en convention monde de Camera (avant +X, haut +Z)."""
     a, b = math.radians(yaw_deg) / 2.0, math.radians(plongee_deg) / 2.0
     ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
     return np.array([ca * cb, -sa * sb, ca * sb, sa * cb])
@@ -211,14 +207,15 @@ CAMERAS_VIDEO = {
     "sud_grande":   dict(position=(2.70, -11.6, 3.5),  yaw=90.0,  plongee=8.0,  fov=80.0),
     "ensemble":     dict(position=(-10.1, -11.6, 5.8), yaw=56.0,  plongee=22.0, fov=95.0),
 }
-# Le jeu retenu par l'utilisatrice : les deux caméras qui regardent dans les deux couloirs
+# Le jeu retenu pour les vidéos : les deux caméras qui regardent dans les deux couloirs
 # principaux, le couloir central et la grande zone. Les trois autres restent disponibles.
 CAMERAS_VIDEO_2 = {n: CAMERAS_VIDEO[n] for n in ("sud_central", "sud_grande")}
 CAMERAS_VIDEO_3 = {n: CAMERAS_VIDEO[n] for n in ("ensemble", "sud_central", "sud_grande")}
-RESOLUTION_VIDEO = (960, 540)
+RESOLUTION_VIDEO = (960, 540)   # px
 
 
 def cameras_fixes(specs: dict = CAMERAS_VIDEO, resolution=RESOLUTION_VIDEO) -> dict[str, Camera]:
+    """Crée les caméras fixes de vidéosurveillance décrites dans `specs` (après world.reset) ; renvoie {nom: caméra}."""
     cams = {}
     for nom, c in specs.items():
         cam = Camera(prim_path=f"/World/Video/Cam_{nom}", position=np.array(c["position"], dtype=float),
@@ -234,8 +231,8 @@ def cameras_fixes(specs: dict = CAMERAS_VIDEO, resolution=RESOLUTION_VIDEO) -> d
 
 
 def ajoute_obstacle(nom: str, centre_xy, dims=(1.0, 1.0, 2.0)):
-    """Un bloc plein posé au sol en cours de mission, avec son collider : le lidar doit le
-    découvrir et la carte doit faire recalculer les chemins. Retourne son emprise."""
+    """Pose au sol, en cours de mission, un bloc plein (1 × 1 × 2 m par défaut) avec sa forme de collision ; renvoie son emprise.
+    Le lidar doit le découvrir et la carte doit faire recalculer les chemins."""
     from isaacsim.core.api.objects import FixedCuboid
 
     lx, ly, lz = dims
@@ -246,10 +243,8 @@ def ajoute_obstacle(nom: str, centre_xy, dims=(1.0, 1.0, 2.0)):
 
 
 def _drone_cameras(drone_prim: str) -> dict[str, Camera]:
-    """Deux latérales haute résolution pour lire, une frontale basse résolution pour voir.
-    Montées sous le ventre (z -0,11) : au-dessus de ce plan, la coque de l'Iris (z -0,067 à
-    +0,047) et les disques d'hélices (z +0,02, rayon 0,13 aux quatre coins) restent à plus de
-    25 degrés au-dessus de l'axe optique, hors du champ vertical de ±23,6 degrés."""
+    """Crée les trois caméras d'un drone : deux latérales 1024 × 768 pour lire, une frontale 160 × 120 pour voir.
+    Montées 11 cm sous le corps, elles ne voient ni coque ni hélices (plus de 25° au-dessus de l'axe, champ vertical ±23,6°)."""
     out_dist = CAMERAS.side_offset
     specs = {
         "left": (90.0, CAMERAS.side_width, CAMERAS.side_height),
@@ -269,8 +264,8 @@ def _drone_cameras(drone_prim: str) -> dict[str, Camera]:
 
 
 def _add_lidar(drone_prim: str) -> str:
-    """Lidar au centre du corps. Sa portée minimale passe au-delà des hélices, sinon le drone
-    se mesurerait lui-même à chaque rayon."""
+    """Ajoute le lidar au centre du corps du drone et renvoie son chemin ; sa portée minimale (0,4 m) dépasse les hélices,
+    sinon le drone se mesurerait lui-même."""
     import omni.kit.commands
 
     omni.kit.commands.execute(
@@ -294,6 +289,7 @@ def _add_lidar(drone_prim: str) -> str:
 
 
 def _make_drone(index: int, spawn_xy: tuple, with_sitl: bool, pg: PegasusInterface) -> Multirotor:
+    """Crée le drone Iris numéro `index`, posé au sol au point de départ ; avec `with_sitl`, Pegasus lance aussi son ArduPilot SITL."""
     config = MultirotorConfig()
     if with_sitl:
         config.backends = [
@@ -322,8 +318,8 @@ def _make_drone(index: int, spawn_xy: tuple, with_sitl: bool, pg: PegasusInterfa
 
 
 def build(layout: Layout, with_sitl: bool = False, n_drones: int | None = None) -> Scene:
-    """Construit la scène complète. `with_sitl=False` : drones posés, inertes — suffisant pour
-    les tests qui ne volent pas, et aucun terminal ne s'ouvre."""
+    """Construit et renvoie la scène complète de l'entrepôt `layout`, avec `n_drones` drones (3 par défaut).
+    `with_sitl=False` : drones posés et inertes, sans autopilote ni terminal, pour les tests qui ne volent pas."""
     n = DRONES.count if n_drones is None else n_drones
 
     pg = PegasusInterface()

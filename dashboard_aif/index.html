@@ -1,4 +1,8 @@
 <!DOCTYPE html>
+<!-- Page du tableau de bord de l'inférence active (AIF) : exploration de l'entrepôt par l'essaim.
+     Servie par server.py : python3 dashboard_aif/server.py, puis ouvrir http://localhost:8060
+     Onglets : Live (vol en cours), Resilience (pannes simulées), NS-3 (réseau), Runs (vols enregistrés).
+     La logique est dans app.js, le style dans style.css ; Chart.js et les polices viennent d'Internet. -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -10,7 +14,7 @@
 </head>
 <body>
 
-<!-- ── HEADER ── -->
+<!-- ── EN-TÊTE : badges (step, couverture, entropie, phase, planificateur, architecture), état, pause ── -->
 <header class="topbar">
     <div class="topbar-left">
         <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -35,7 +39,7 @@
     </div>
 </header>
 
-<!-- ── TABS NAV ── -->
+<!-- ── BARRE D'ONGLETS (data-tab = identifiant de l'onglet, voir switchTab dans app.js) ── -->
 <nav class="tabs-nav" id="tabsNav">
     <button class="tab-btn active" data-tab="live">● Live</button>
     <button class="tab-btn" data-tab="resilience">Resilience</button>
@@ -44,11 +48,11 @@
 </nav>
 
 <!-- ══════════════════════════════════════════════════════════════
-     TAB : LIVE  (contenu existant)
+     ONGLET LIVE : le vol en cours (lu dans /tmp, mis à jour toutes les 0,5 s)
      ══════════════════════════════════════════════════════════════ -->
 <main class="dashboard tab-panel active" id="tab-live">
 
-    <!-- ── BIG MAP ── -->
+    <!-- ── GRANDE CARTE : grille de croyance fusionnée (probabilité d'occupation de chaque case) ── -->
     <section class="map-section">
         <div class="card card-map">
             <div class="card-header">
@@ -67,7 +71,7 @@
         </div>
     </section>
 
-    <!-- ── KPI ROW ── -->
+    <!-- ── CARTES CHIFFRÉES de l'exploration ── -->
     <section class="kpi-row">
         <div class="kpi-card">
             <div class="kpi-value" id="kpiStep">0</div>
@@ -104,7 +108,7 @@
     </section>
 
     <!-- ══════════════════════════════════════════════════════════
-         CAMERA FEEDS + QR DETECTION
+         IMAGES DES CAMÉRAS + DÉCODAGE DES QR CODES (une carte par drone, remplie par app.js)
          ══════════════════════════════════════════════════════════ -->
     <section class="camera-section">
         <div class="card">
@@ -122,7 +126,7 @@
         </div>
     </section>
 
-    <!-- ── QR KPI ROW ── -->
+    <!-- ── CARTES CHIFFRÉES du décodage QR ── -->
     <section class="kpi-row kpi-row-qr">
         <div class="kpi-card kpi-qr">
             <div class="kpi-value kpi-qr-val" id="kpiQrTotal">0</div>
@@ -150,7 +154,7 @@
         </div>
     </section>
 
-    <!-- ── CHARTS 2×3 ── -->
+    <!-- ── SIX GRAPHIQUES (2 × 3) ── -->
     <section class="charts-grid">
         <div class="card card-chart">
             <div class="card-header"><h3>Entropy Over Time</h3></div>
@@ -178,7 +182,7 @@
         </div>
     </section>
 
-    <!-- ── DRONE INFO TABLE ── -->
+    <!-- ── TABLEAU DES DRONES ── -->
     <section class="drone-table-section">
         <div class="card">
             <div class="card-header"><h3>Drone Status</h3></div>
@@ -198,7 +202,7 @@
         </div>
     </section>
 
-    <!-- ── RESILIENCE EVENTS LOG ── -->
+    <!-- ── JOURNAL DES ÉVÉNEMENTS DE RÉSILIENCE ── -->
     <section class="resilience-section">
         <div class="card">
             <div class="card-header"><h3>Resilience Events</h3></div>
@@ -211,7 +215,7 @@
 </main>
 
 <!-- ══════════════════════════════════════════════════════════════
-     TAB : RESILIENCE
+     ONGLET RESILIENCE : phases normal / recovery / durable après une panne simulée
      ══════════════════════════════════════════════════════════════ -->
 <main class="dashboard tab-panel" id="tab-resilience">
     <section class="kpi-row">
@@ -255,7 +259,7 @@
 </main>
 
 <!-- ══════════════════════════════════════════════════════════════
-     TAB : NS-3 NETWORK
+     ONGLET NS-3 : réseau simulé (latences entre drones, lien cloud, messages)
      ══════════════════════════════════════════════════════════════ -->
 <main class="dashboard tab-panel" id="tab-ns3">
     <section class="kpi-row">
@@ -308,7 +312,7 @@
 </main>
 
 <!-- ══════════════════════════════════════════════════════════════
-     TAB : RUNS
+     ONGLET RUNS : vols enregistrés dans logs/runs (liste à gauche, images à droite)
      ══════════════════════════════════════════════════════════════ -->
 <main class="dashboard tab-panel" id="tab-runs">
     <section class="runs-layout">

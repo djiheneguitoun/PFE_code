@@ -1,17 +1,8 @@
-"""
-Mesure 02 — Combien coûte DreamerV3 sur NOTRE machine ?
+"""Mesure 02 — chronomètre un pas d'entraînement de DreamerV3 sur le GPU et relève la mémoire graphique.
 
-On reconstruit fidèlement l'architecture de DreamerV3 (encodeur convolutif, RSSM
-récurrent, décodeur, têtes récompense/fin, acteur, critique) et on chronomètre un
-pas d'entraînement complet : apprentissage du modèle du monde, puis imagination,
-puis mise à jour de l'acteur et du critique.
-
-Ce que ça mesure  : le coût d'APPRENTISSAGE de Dreamer, en temps et en mémoire.
-Ce que ça ne mesure PAS : le coût du simulateur (Isaac Sim), qui s'ajoute.
-
-Usage :
+Seul l'apprentissage est compté, pas le simulateur. Depuis la racine (ajouter --quick : 5 itérations au lieu de 15) :
     ~/isaac5_env/bin/python experiments/02_dreamer_bench/dreamer_bench.py
-    ~/isaac5_env/bin/python experiments/02_dreamer_bench/dreamer_bench.py --quick
+Écrit resultats.csv et resultats.json à côté du script.
 """
 
 import argparse
@@ -24,10 +15,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-OUT = Path(__file__).parent
-DEV = "cuda" if torch.cuda.is_available() else "cpu"
+OUT = Path(__file__).parent  # dossier où sont écrits les résultats (celui du script)
+DEV = "cuda" if torch.cuda.is_available() else "cpu"  # calcul sur le GPU (cuda) s'il est disponible
 
 # Tailles officielles de DreamerV3 (Hafner et al. 2023, table des préréglages)
+# deter : taille de la mémoire récurrente ; cnn_depth : canaux du 1er étage du CNN ;
+# units, layers : largeur et nombre de couches des petits réseaux (MLP)
 PRESETS = {
     "12M": dict(deter=256, cnn_depth=24, units=256, layers=2),
     "25M": dict(deter=512, cnn_depth=32, units=512, layers=2),
@@ -35,10 +28,12 @@ PRESETS = {
 }
 STOCH, CLASSES = 32, 32          # 32 variables catégorielles à 32 valeurs
 IMG, ACT_DIM = 64, 4             # images 64x64 ; action = vx, vy, vz, omega
-PROPRIO_DIM = 7
+PROPRIO_DIM = 7  # taille du vecteur d'état propre du drone (proprioception), donné à l'encodeur
 
 
 def mlp(i, o, units, layers):
+    """Renvoie un petit réseau (MLP) : `layers` couches de `units` neurones (Linear + LayerNorm + SiLU),
+    puis une couche de sortie de taille `o`, pour une entrée de taille `i`."""
     net, d = [], i
     for _ in range(layers):
         net += [nn.Linear(d, units), nn.LayerNorm(units), nn.SiLU()]
@@ -47,9 +42,10 @@ def mlp(i, o, units, layers):
 
 
 class Encoder(nn.Module):
-    """CNN à 4 étages, division par 2 à chaque fois : 64 -> 32 -> 16 -> 8 -> 4."""
+    """Encodeur : CNN à 4 étages sur les images (64 -> 32 -> 16 -> 8 -> 4 px) + petit réseau sur la proprioception."""
 
     def __init__(self, depth, n_cams):
+        """Construit le CNN pour `n_cams` images RGB empilées : `depth` canaux au 1er étage, doublés à chaque étage."""
         super().__init__()
         ch, layers = 3 * n_cams, []
         for i in range(4):
@@ -62,11 +58,15 @@ class Encoder(nn.Module):
         self.out_dim = self.cnn_out + 128
 
     def forward(self, img, vec):
+        """Renvoie le vecteur d'observation : sortie du CNN aplatie, suivie de celle du réseau de proprioception."""
         return torch.cat([self.cnn(img).flatten(1), self.vec(vec)], -1)
 
 
 class Decoder(nn.Module):
+    """Décodeur : reconstruit les images et la proprioception à partir de l'état du modèle du monde."""
+
     def __init__(self, depth, n_cams, feat):
+        """Construit le chemin inverse de l'encodeur (4 -> 8 -> 16 -> 32 -> 64 px) depuis un état de taille `feat`."""
         super().__init__()
         ch = depth * 8
         self.fc = nn.Linear(feat, ch * 4 * 4)
@@ -81,14 +81,15 @@ class Decoder(nn.Module):
         self.vec = nn.Linear(feat, PROPRIO_DIM)
 
     def forward(self, f):
+        """Renvoie (images reconstruites, proprioception reconstruite) pour un lot d'états `f`."""
         return self.deconv(self.fc(f).view(-1, self.ch, 4, 4)), self.vec(f)
 
 
 class RSSM(nn.Module):
-    """Le coeur du modele du monde : une memoire recurrente `deter` + un etat
-    stochastique `stoch`. C'est lui qui apprend a predire la suite."""
+    """Cœur du modèle du monde : une mémoire récurrente `deter` (GRU) + un état aléatoire `stoch` ; il apprend à prédire la suite."""
 
     def __init__(self, deter, units, layers, embed_dim):
+        """Construit le GRU et deux têtes : `prior` (devine l'état sans l'image) et `post` (l'estime avec l'image)."""
         super().__init__()
         self.deter, self.sd = deter, STOCH * CLASSES
         self.pre = nn.Sequential(nn.Linear(self.sd + ACT_DIM, units), nn.LayerNorm(units), nn.SiLU())
@@ -98,12 +99,16 @@ class RSSM(nn.Module):
 
     @staticmethod
     def sample(logits):
+        """Tire un état discret (32 variables à 32 valeurs) selon `logits` ; renvoie (état aplati, logits).
+        Astuce « straight-through » : valeur tirée vers l'avant, gradient des probabilités vers l'arrière."""
         lg = logits.view(-1, STOCH, CLASSES)
         p = F.softmax(lg, -1)
         oh = F.one_hot(torch.multinomial(p.view(-1, CLASSES), 1).squeeze(-1), CLASSES).view_as(p)
         return (oh + p - p.detach()).flatten(1), lg   # straight-through
 
     def step(self, stoch, action, deter, embed=None):
+        """Avance d'un pas avec `action` ; renvoie (état, mémoire, logits du prior, logits du post).
+        Sans image `embed` (imagination), l'état est tiré du prior et le dernier élément vaut None."""
         deter = self.gru(self.pre(torch.cat([stoch, action], -1)), deter)
         prior_lg = self.prior(deter)
         if embed is None:
@@ -115,7 +120,10 @@ class RSSM(nn.Module):
 
 
 class Dreamer(nn.Module):
+    """Modèle DreamerV3 du banc : encodeur, RSSM, décodeur, têtes récompense et fin d'épisode, acteur, critique."""
+
     def __init__(self, preset, n_cams):
+        """Construit tous les réseaux pour le préréglage `preset` ("12M", "25M" ou "50M") et `n_cams` caméras."""
         super().__init__()
         p = PRESETS[preset]
         self.enc = Encoder(p["cnn_depth"], n_cams)
@@ -123,20 +131,23 @@ class Dreamer(nn.Module):
         feat = p["deter"] + STOCH * CLASSES
         self.dec = Decoder(p["cnn_depth"], n_cams, feat)
         self.reward = mlp(feat, 255, p["units"], p["layers"])   # symlog two-hot
+        # cont : probabilité que l'épisode continue (tête « fin d'épisode »)
         self.cont = mlp(feat, 1, p["units"], p["layers"])
         self.actor = mlp(feat, ACT_DIM * 2, p["units"], p["layers"])
         self.critic = mlp(feat, 255, p["units"], p["layers"])
         self.feat = feat
 
 
+# précision de calcul -> type utilisé par autocast (None = fp32, autocast désactivé)
 DTYPES = {"fp32": None, "fp16": torch.float16, "bf16": torch.bfloat16}
 
 
 def train_step(m, opt, batch, horizon, prec):
+    """Fait un pas d'entraînement (modèle du monde, imagination sur `horizon` pas, acteur-critique) ; renvoie la perte."""
     B, T = batch["img"].shape[:2]
     dt = DTYPES[prec]
     with torch.autocast("cuda", dtype=dt or torch.float32, enabled=dt is not None):
-        # --- 1. modele du monde : on remonte la sequence pas a pas ---
+        # --- 1. modèle du monde : on remonte la séquence pas à pas ---
         embed = m.enc(batch["img"].flatten(0, 1), batch["vec"].flatten(0, 1)).view(B, T, -1)
         stoch = torch.zeros(B, STOCH * CLASSES, device=DEV)
         deter = torch.zeros(B, m.rssm.deter, device=DEV)
@@ -154,7 +165,7 @@ def train_step(m, opt, batch, horizon, prec):
                 + torch.stack(kls).mean()
                 + m.reward(flat).mean() * 0 + m.cont(flat).mean() * 0)
 
-        # --- 2. imagination : on part de CHAQUE etat et on reve `horizon` pas ---
+        # --- 2. imagination : on part de CHAQUE état et on rêve `horizon` pas ---
         s, d = flat[:, :STOCH * CLASSES].detach(), flat[:, STOCH * CLASSES:].detach()
         im = []
         for _ in range(horizon):
@@ -163,7 +174,7 @@ def train_step(m, opt, batch, horizon, prec):
             s, d, _, _ = m.rssm.step(s, a, d)
             im.append(torch.cat([s, d], -1))
         imf = torch.stack(im)
-        # --- 3. acteur + critique sur les trajectoires revees ---
+        # --- 3. acteur + critique sur les trajectoires rêvées ---
         loss = loss + m.critic(imf).mean() * 0 + m.actor(imf).mean() * 0 + m.reward(imf).mean() * 0
 
     opt.zero_grad(set_to_none=True)
@@ -173,6 +184,8 @@ def train_step(m, opt, batch, horizon, prec):
 
 
 def bench(preset, n_cams, B, T, horizon, prec, iters):
+    """Chronomètre une configuration sur des données aléatoires (3 pas de chauffe, puis `iters` pas) ;
+    renvoie (nombre de paramètres, secondes par pas, pic de mémoire GPU en Go)."""
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     m = Dreamer(preset, n_cams).to(DEV)
@@ -201,6 +214,7 @@ def bench(preset, n_cams, B, T, horizon, prec, iters):
 
 
 def main():
+    """Mesure les 8 configurations (tableau A), calcule le tampon de rejeu (B) et la durée d'un entraînement (C), écrit CSV et JSON."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="moins d'itérations, pour un essai rapide")
     a = ap.parse_args()
@@ -210,7 +224,8 @@ def main():
           f"({torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} Go)")
     print(f"torch {torch.__version__} | CUDA {torch.version.cuda}\n")
 
-    # config de reference DreamerV3 : lot 16 x 64, imagination 15 pas
+    # config de référence DreamerV3 : lot 16 x 64, imagination 15 pas
+    # chaque ligne : (préréglage, caméras, séquences par lot, longueur des séquences, horizon d'imagination, précision)
     configs = [
         ("12M", 2, 16, 64, 15, "fp16"),
         ("12M", 2, 16, 64, 15, "fp32"),
@@ -241,6 +256,7 @@ def main():
             print(f"{preset:>7} {cams:>5} {B}x{T:<5} {prec:>10}   MÉMOIRE INSUFFISANTE")
             torch.cuda.empty_cache()
 
+    # référence pour B et C : 12M, 2 caméras, fp16, lot 16x64 (sinon la première configuration qui a tenu)
     ref = next((r for r in rows if r["preset"] == "12M" and r["cams"] == 2
                 and r["precision"] == "fp16" and r["batch"] == "16x64"), rows[0] if rows else None)
     if ref is None:
@@ -252,7 +268,7 @@ def main():
     print("B. TAMPON DE REJEU (le point qui inquiétait)")
     print("=" * 84)
     per_drone = IMG * IMG * 3 * 2          # 2 caméras, uint8
-    per_team = per_drone * 3
+    per_team = per_drone * 3               # octets par pas pour les 3 drones (72 Ko)
     print(f"  Un pas, un drone, 2 caméras 64x64 : {per_drone/1024:.0f} Ko")
     print(f"  Un pas, les 3 drones             : {per_team/1024:.0f} Ko")
     print(f"\n{'pas stockés':>14} {'taille':>12}   tient dans 19 Go libres ?")
@@ -260,7 +276,7 @@ def main():
         gb = steps * per_team / 2 ** 30
         print(f"{steps:>14,} {gb:>10.1f} Go   {'oui' if gb < 19 else 'NON'}")
 
-    # ---------- C. duree d'un run ----------
+    # ---------- C. durée d'un run ----------
     print("\n" + "=" * 84)
     print("C. DURÉE D'UN ENTRAÎNEMENT COMPLET")
     print("=" * 84)
@@ -272,6 +288,7 @@ def main():
           f"{ref['cams']} caméras, {ref['precision']})\n")
     print(f"{'train_ratio':>12} {'pas env/s':>11} {'1M pas env':>13} {'5M pas env':>13}")
     for tr in [32, 64, 128, 256, 512]:
+        # pas neufs par seconde que l'apprentissage absorbe : 1024 ÷ (train_ratio × durée d'un pas)
         env_per_s = replayed / (tr * sec)
         print(f"{tr:>12} {env_per_s:>11.0f} {1e6/env_per_s/3600:>11.1f} h {5e6/env_per_s/3600:>11.1f} h")
 

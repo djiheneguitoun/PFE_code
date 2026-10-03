@@ -1,8 +1,7 @@
-"""Les deux figures mesurées de la section perception : l'enveloppe de lecture et les deux
-portées de repérage. Elles relisent les résultats des étapes 2 et 7 ; aucun chiffre n'est écrit
-à la main. Version chapitre conception : une courbe par question, aucun nom de bibliothèque.
-
-    perception_courbes.py
+"""Fabrique les deux figures mesurées de la section perception : fig_enveloppe.png (taux de lecture
+selon la distance apparente, étape 2) et fig_portees.png (portée des deux détecteurs, étape 7).
+Chiffres relus dans 07_enveloppe/resultats.json et 10_detecteur/resultats.json, aucun écrit à la main.
+    python perception_courbes.py
 """
 import json
 from pathlib import Path
@@ -11,11 +10,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-EXP = Path(__file__).resolve().parents[2] / "experiments"
-ICI = Path(__file__).resolve().parent
-ENCRE, DOUCE = "#16201C", "#5F6B66"
-LU, APPRIS, CLASSIQUE = "#2F9E44", "#364FC7", "#C92A2A"
-LIRE_MIN, LIRE_MAX = 1.5, 4.0
+EXP = Path(__file__).resolve().parents[2] / "experiments"   # swarm_qr/experiments
+ICI = Path(__file__).resolve().parent                        # les figures sont écrites ici
+ENCRE, DOUCE = "#16201C", "#5F6B66"                          # couleurs du texte
+LU, APPRIS, CLASSIQUE = "#2F9E44", "#364FC7", "#C92A2A"      # lecture, détecteur appris, détecteur géométrique
+LIRE_MIN, LIRE_MAX = 1.5, 4.0                                # m : bornes de l'enveloppe de lecture (étape 2)
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans", "font.size": 10.5, "axes.edgecolor": "#C9D3CF",
@@ -25,11 +24,13 @@ plt.rcParams.update({
 
 
 def centres(bandes):
+    """Renvoie le milieu de chaque bande de distance (moyenne de `min` et `max`, en m)."""
     return [(b["min"] + b["max"]) / 2 for b in bandes]
 
 
 def enveloppe():
-    """Le taux de lecture contre la distance apparente, et l'enveloppe qu'il définit."""
+    """Trace le taux de lecture par image selon la distance apparente (avec son intervalle de
+    confiance) et l'enveloppe 1,5-4 m qu'il définit ; écrit fig_enveloppe.png."""
     r = json.loads((EXP / "07_enveloppe" / "resultats.json").read_text())
     c = r["optique"]["lecteurs"]["zxing"]["courbe_apparente"]
     x, y = centres(c), [b["p_lu"] for b in c]
@@ -63,7 +64,8 @@ def enveloppe():
 
 
 def portees():
-    """Ce que chaque détecteur repère, à la même distance, sur les mêmes images."""
+    """Trace la part des panneaux repérés selon la distance par le détecteur géométrique et par le
+    détecteur appris (YOLO n1024, confiance 0,5), et leurs fausses alertes ; écrit fig_portees.png."""
     r = json.loads((EXP / "10_detecteur" / "resultats.json").read_text())
     cl = r["classique"]["optique"]["courbe_distance"]
     ap = [b for b in [v for v in r["variantes"] if v["variante"] == "n1024"][0]

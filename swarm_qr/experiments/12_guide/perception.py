@@ -1,13 +1,8 @@
-"""Que voit vraiment le modèle sur le plan, et que lui coûte la compression ?
-
-Six questions dont la réponse est calculée depuis les données, donc vérifiable sans discussion :
-compter les repères, trouver le plus à gauche, le plus à droite, le plus haut, le plus bas, et le
-voisin le plus proche d'un repère donné. Aucune n'a de rapport avec la mission : on mesure la
-vue, pas le jugement.
-
-Chaque question est posée sur le plan tel qu'il est enregistré, puis sur le plan redessiné, et
-pour chaque version du modèle : sans compression, en 8 bits, en 4 bits, et en 4 bits avec
-l'encodeur d'images laissé en 16 bits.
+"""Contrôle de perception (étape 8) : 6 questions à réponse calculée sur le plan (compter les repères,
+le plus à gauche, à droite, en haut, en bas, le voisin le plus proche), sans rapport avec la mission,
+sur le plan d'origine et le plan redessiné, pour 4 versions du modèle (non compressé, 8 bits, 4 bits,
+4 bits avec la vision en 16 bits). Depuis swarm_qr/ (les vols sont cherchés dans experiments/11_mission/) :
+    $PY experiments/12_guide/perception.py --missions <noms de vols> --modele <dossier du modèle>
 """
 from __future__ import annotations
 
@@ -21,6 +16,7 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+# racine du projet (pour swarm_qr) et ce dossier (pour banc et variantes) dans le chemin d'import
 sys.path.insert(0, str(HERE.parents[2]))
 sys.path.insert(0, str(HERE))
 
@@ -28,16 +24,19 @@ from swarm_qr.guide import Guide                                        # noqa: 
 from banc import instantanes                                           # noqa: E402
 from variantes import melange, plan_lisible, positions_plan_origine, _note  # noqa: E402
 
+# début commun des 6 questions : décrit l'image au modèle
 DECOR = ("The image is a map of a warehouse seen from above. A few positions are marked with a "
          "red circle containing a white number. ")
 ECART_MIN = 25          # px : deux repères plus proches que ça rendent la question ambiguë
 
 
 def questions(reperes: dict) -> list[dict]:
-    """Les six questions et leurs réponses, calculées depuis les pixels des repères."""
+    """Renvoie les 6 questions avec leur réponse calculée depuis les pixels des repères, et un drapeau
+    « ambigu » quand deux repères sont trop proches pour trancher."""
     nums = sorted(reperes)
     xs = {n: reperes[n][0] for n in nums}
     ys = {n: reperes[n][1] for n in nums}
+    # repère de référence de la question « voisin » : celui du milieu de la liste
     ancre = nums[len(nums) // 2]
     voisins = sorted((float(np.hypot(xs[n] - xs[ancre], ys[n] - ys[ancre])), n)
                      for n in nums if n != ancre)
@@ -64,9 +63,11 @@ def questions(reperes: dict) -> list[dict]:
 
 
 def _serre(valeurs: list[float]) -> bool:
+    """Renvoie vrai si les deux premières valeurs (déjà triées) sont à moins de ECART_MIN pixels."""
     return len(valeurs) > 1 and abs(valeurs[1] - valeurs[0]) < ECART_MIN
 
 
+# les 4 versions comparées : nom -> réglages passés à Guide (appareil, compression)
 VERSIONS = {
     "sans compression": {"device": "auto", "quantisation": None},
     "8 bits": {"device": "cuda", "quantisation": "8bit"},
@@ -76,6 +77,8 @@ VERSIONS = {
 
 
 def profil(nom_version: str, modele: str, cas: list[dict]) -> dict:
+    """Charge une version du modèle, pose les questions non ambiguës sur les deux plans et renvoie
+    le nombre de bonnes réponses, la mémoire GPU, le temps de chargement et de réponse."""
     import torch
 
     reglages = VERSIONS[nom_version]
@@ -119,6 +122,8 @@ def profil(nom_version: str, modele: str, cas: list[dict]) -> dict:
 
 
 def main() -> None:
+    """Choisit `--cas` cas répartis dans les vols, profile chaque version demandée et réécrit
+    le fichier de résultats après chacune (une version qui plante est notée « echec »)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--missions", nargs="+", required=True)
     ap.add_argument("--modele", required=True)

@@ -1,11 +1,9 @@
-"""SwarmScanMapEnv : l'arène v2 (conception_solution_finale.md).
+"""Environnement SwarmScan-Map (Isaac Lab, conception_solution_finale.md) : 3 drones par entrepôt apprennent à lire tous les QR.
 
-Hérite de SwarmQREnv (scène, drones, raycast statique, drive) et remplace :
-observation (cartes égocentriques + vecteur, ZÉRO position de QR non lu),
-récompense (couverture dense + potentiel privilégié train-only), gate ADR,
-resets randomisés (configurations + spawns), panne de drone entraînée.
-Corrige au passage les bugs de l'audit (_refreshed, lidar égocentrique,
-dwell par drone, crédit aléatoire, jerk pré-clamp).
+Hérite de SwarmQREnv (../env.py : scène, drones, lidar, pilotage) et remplace l'observation (cartes
++ vecteur, jamais la position d'un QR non lu), la récompense, la règle de lecture à crans, les
+départs aléatoires et les pannes ; corrige aussi des bugs d'audit (lidar égocentrique, visée par
+drone, crédit tiré au hasard, à-coups mesurés avant écrêtage). Utilisé via flatten_wrapper.py.
 """
 
 from __future__ import annotations
@@ -26,33 +24,41 @@ from .curriculum import GateCurriculum
 from .layouts import LayoutGenerator
 from .mapping import SwarmMapper
 
-D = NUM_DRONES
-# +D : identité du drone (one-hot). Les 3 drones partagent UN cerveau ; sans identifiant ils
-# reçoivent des observations semblables, prennent les mêmes décisions et se regroupent au même
-# endroit — mesuré : dans les bons épisodes la pénalité de proximité était 10× plus lourde que
-# dans les mauvais, et la couverture d'équipe devenait négative (travail en triple).
+D = NUM_DRONES  # nombre de drones par entrepôt (3)
+# Taille du vecteur d'état d'un drone (98) : 72 secteurs lidar + vitesse (3) + rotation (1)
+# + cap sin/cos (2) + altitude (1) + temps écoulé (1) + 2 coéquipiers × (position relative 3
+# + en vie 1) + panne (1) + 2 indicateurs « assez lent » + 4 seuils de lecture + identité (D).
+# Identité du drone (one-hot) : les 3 drones partagent UN seul réseau ; sans identifiant, ils
+# prenaient les mêmes décisions et se regroupaient au même endroit. Mesuré : pénalité de
+# proximité 10× plus lourde dans les bons épisodes que dans les mauvais, et couverture
+# d'équipe négative (travail fait en triple).
 VEC_DIM = MAP_CFG.train.lidar_sectors + 3 + 1 + 2 + 1 + 1 + (D - 1) * 4 + 1 + 2 + 4 + D
-PRIV_DIM = 7
-OBS_DIM = MAP_CFG.map.obs_dim + VEC_DIM + PRIV_DIM
+PRIV_DIM = 7  # infos privilégiées, vues par le critique seul (voir priv dans _get_observations)
+OBS_DIM = MAP_CFG.map.obs_dim + VEC_DIM + PRIV_DIM  # observation complète d'un drone : 18 432 + 98 + 7
 
 
 @configclass
 class SwarmScanMapEnvCfg(SwarmQREnvCfg):
-    episode_length_s = MAP_CFG.train.episode_length_s
+    """Réglages Isaac de l'environnement : durée d'épisode, taille des observations, altitude max 4 m."""
+
+    episode_length_s = MAP_CFG.train.episode_length_s  # s : 150 s au cran 0 (allongée ensuite à chaque cran)
     observation_spaces = {a: OBS_DIM for a in AGENTS}
-    state_space = 0
-    alt_max: float = 4.0  # gate calibré à 1,25 m : il faut monter pour lire les tags hauts
+    state_space = 0  # pas d'état global séparé : le critique reçoit le groupe « privileged »
+    alt_max: float = 4.0  # m : lecture à 1,25 m max, il faut monter pour lire les QR hauts
 
 
 class SwarmScanMapEnv(SwarmQREnv):
+    """Environnement à 3 drones par entrepôt : carte partagée, règle de lecture à crans, pannes simulées."""
+
     cfg: SwarmScanMapEnvCfg
 
     def __init__(self, cfg: SwarmScanMapEnvCfg, render_mode: str | None = None, **kwargs):
+        """Crée la carte partagée, le curriculum et tous les tampons (par entrepôt et par drone)."""
         super().__init__(cfg, render_mode, **kwargs)
         m = MAP_CFG
         self._mapper = SwarmMapper(m.map, self.num_envs, D, self.device)
         self._curr = GateCurriculum(m.gate, m.curriculum)
-        self._split = "train"
+        self._split = "train"          # ensemble de configurations utilisé : "train", "val" ou "test"
         self._layouts: LayoutGenerator | None = None
         self._config_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
@@ -60,9 +66,9 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._prev_raw = {a: torch.zeros(B, CFG.action.dim, device=self.device) for a in AGENTS}
         self._jerk_pre = {a: torch.zeros(B, device=self.device) for a in AGENTS}
         self._bound_pen = {a: torch.zeros(B, device=self.device) for a in AGENTS}
-        self._dead = torch.zeros(B, D, dtype=torch.bool, device=self.device)
-        self._kill_step = torch.full((B,), -1, dtype=torch.long, device=self.device)
-        self._victim = torch.zeros(B, dtype=torch.long, device=self.device)
+        self._dead = torch.zeros(B, D, dtype=torch.bool, device=self.device)               # drone en panne
+        self._kill_step = torch.full((B,), -1, dtype=torch.long, device=self.device)       # pas de la panne (−1 : aucune)
+        self._victim = torch.zeros(B, dtype=torch.long, device=self.device)                # drone qui tombera en panne
         self._milestones = torch.zeros(B, len(m.reward.milestones), dtype=torch.bool, device=self.device)
         self._read_frac_readable = torch.zeros(B, device=self.device)
         self._phi = torch.zeros(B, D, device=self.device)
@@ -74,9 +80,9 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._new_reads_nom = torch.zeros(D, B, device=self.device)
         self._lin_k = torch.zeros(B, D, device=self.device)
         self._yawrate_k = torch.zeros(B, D, device=self.device)
-        self._alg_ref = None           # posé par train.py : bascule d'entropie en vol au niveau cible
-        self._switch_level = 10
-        self._switch_entropy = 0.001
+        self._alg_ref = None           # posé par train.py : bascule d'entropie en cours d'entraînement au niveau cible
+        self._switch_level = 10        # niveau qui déclenche la bascule (train.py le remplace par --converge_level)
+        self._switch_entropy = 0.001   # nouveau coefficient d'entropie (train.py : --entropy_final)
         self._switched = False
         self._scan_counts = {k: torch.zeros(B, D, device=self.device) for k in ("new", "facade", "marginal", "overlap")}
         self._pos_local = torch.zeros(B, D, 3, device=self.device)
@@ -95,6 +101,7 @@ class SwarmScanMapEnv(SwarmQREnv):
     # ------------------------------------------------------------------ QR & layouts
 
     def _ensure_qr(self):
+        """Au premier pas : lit les QR (classe mère), repère ceux qui sont atteignables et tire les configurations."""
         super()._ensure_qr()
         n = self._n_cartons
         z = self._qr_pos_local.view(n, len(FACES), 3)[:, 0, 2]
@@ -104,12 +111,15 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._config_ids = self._layouts.sample_ids(self.num_envs, self._split)
         self._active, self._preread = self._layouts.masks(self._config_ids)
         self._read |= self._preread
+        # QR lisible = porte un QR actif, assez bas pour être atteint, et pas déjà lu au départ
         self._readable = self._active & self._reachable.unsqueeze(0) & ~self._preread
+        # compteurs de visée (pas consécutifs) PAR DRONE, pour la règle courante et la nominale
         self._dwell_k = torch.zeros(D, self.num_envs, n, dtype=torch.int16, device=self.device)
         self._dwell_nom = torch.zeros(D, self.num_envs, n, dtype=torch.int16, device=self.device)
         self._read_nominal = torch.zeros(self.num_envs, n, dtype=torch.bool, device=self.device)
 
     def _resample_layout(self, env_ids: torch.Tensor):
+        """Tire de nouvelles configurations pour les entrepôts `env_ids` et remet leurs compteurs de lecture à zéro."""
         ids = self._layouts.sample_ids(len(env_ids), self._split)
         self._config_ids[env_ids] = ids
         active, preread = self._layouts.masks(ids)
@@ -124,6 +134,7 @@ class SwarmScanMapEnv(SwarmQREnv):
     # ------------------------------------------------------------------ gate (ADR + nominal)
 
     def _update_qr(self):
+        """Applique la règle de lecture à chaque pas : crédite les nouveaux QR lus et calcule le potentiel d'aide."""
         if not self._qr_ready:
             self._ensure_qr()
         th = self._curr.thresholds()
@@ -140,10 +151,10 @@ class SwarmScanMapEnv(SwarmQREnv):
             vec = qr_pos - d.root_pos_w.unsqueeze(1)
             dist = torch.norm(vec, dim=-1).clamp_min(1e-6)
             direction = vec / dist.unsqueeze(-1)
-            # DEUX caméras LATÉRALES (±90° du cap) : la lecture se fait en LONGEANT les racks,
-            # sans visée fine du lacet — c'est la visée qui vivait dans le bruit d'exploration
-            # (mesuré : 0,91 bruité → 0,11 déterministe en frontal ; géométrie C=1,0 en latéral).
-            # Axe gauche = (−sin, cos, 0), axe droit = son opposé : un seul test en |valeur absolue|.
+            # DEUX caméras LATÉRALES (±90° du cap) : le drone lit en LONGEANT les racks, sans viser
+            # finement avec le cap (en frontal, la visée ne marchait que grâce au bruit : 0,91 avec
+            # bruit → 0,11 sans ; en latéral, tout est lisible géométriquement : 1,0).
+            # Axe gauche = (−sin, cos, 0), axe droit = son opposé : un seul test en valeur absolue.
             side = torch.stack([-torch.sin(self._yaw[:, k]), torch.cos(self._yaw[:, k]),
                                 torch.zeros_like(self._yaw[:, k])], dim=-1)
             in_fov = (direction * side.unsqueeze(1)).sum(-1).abs() >= cos_fov
@@ -159,19 +170,20 @@ class SwarmScanMapEnv(SwarmQREnv):
             self._yaw_ok[:, k] = (yr <= th["max_yawrate_rps"]) & alive
 
             def gate(dist_max, ang_deg, v_max, yr_max):
+                """Renvoie, par entrepôt et par QR, si ce drone le lit avec ces seuils (distance, angle, vitesse, rotation)."""
                 ok = (dist <= dist_max) & in_fov & (face_cos >= math.cos(math.radians(ang_deg)))
                 ok = ok.view(B, n, len(FACES)).any(-1)
                 slow = (lin <= v_max) & (yr <= yr_max) & alive
                 return ok & slow.unsqueeze(1)
 
+            # vis_cur : règle du niveau courant ; vis_nom : règle nominale (suivie à part pour le bonus)
             vis_cur[k] = gate(th["read_distance_m"], th["view_angle_deg"],
                               th["max_speed_mps"], th["max_yawrate_rps"])
             vis_nom[k] = gate(g.read_distance_m, g.view_angle_deg, g.max_speed_mps, g.max_yawrate_rps)
             dist_tag[k] = dist.view(B, n, len(FACES)).min(-1).values
 
-        # au reset la vitesse est nulle : sans ce délai, les spawns dirigés offrent une
-        # lecture gratuite dès le premier pas (les 2 conditions géométriques y sont
-        # satisfaites avec probabilité 1, et la condition de vitesse aussi)
+        # au départ la vitesse est nulle : sans ce délai (15 pas), un drone placé exprès près d'un
+        # QR le lisait gratuitement dès le premier pas (géométrie et vitesse déjà bonnes)
         live = (self.episode_length_buf >= g.credit_blackout_steps).view(1, B, 1)
         vis_cur &= live
         vis_nom &= live
@@ -179,8 +191,8 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._dwell_k = torch.where(vis_cur, self._dwell_k + 1, torch.zeros_like(self._dwell_k))
         self._dwell_nom = torch.where(vis_nom, self._dwell_nom + 1, torch.zeros_like(self._dwell_nom))
 
-        # _readable et non _active : un tag au-dessus de max_tag_z_m payait 25 points sans
-        # jamais compter au dénominateur de la mission ni du curriculum
+        # seuls les QR LISIBLES comptent (_readable et non _active) : avant, un QR trop haut payait
+        # 25 points sans jamais compter dans le total de la mission ni du curriculum
         ready = (self._dwell_k >= int(th["dwell_steps"])) & self._readable.unsqueeze(0) & (~self._read).unsqueeze(0)
         ready_nom = (self._dwell_nom >= g.dwell_steps) & self._readable.unsqueeze(0) & (~self._read_nominal).unsqueeze(0)
 
@@ -188,12 +200,15 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._new_reads_nom = torch.zeros(D, B, device=self.device)
         credited = torch.zeros(B, n, dtype=torch.bool, device=self.device)
         credited_nom = torch.zeros(B, n, dtype=torch.bool, device=self.device)
+        # ordre des drones tiré au hasard : un QR vu par deux drones est crédité à un seul,
+        # sans favoriser toujours le même
         for k in torch.randperm(D).tolist():
             cred = ready[k] & ~credited
             credited |= cred
             self._new_reads[k] = cred.sum(dim=1).float()
-            # posture nominale = événement SÉPARÉ (le gate tolérant lit avant que les 2 pas nominaux
-            # soient tenus : lié à la lecture, le bonus serait inatteignable) — payé 1×/tag/épisode
+            # posture nominale = événement SÉPARÉ, payé 1 fois par QR et par épisode : la règle
+            # tolérante lit avant que la posture nominale soit tenue 2 pas, donc un bonus lié à
+            # la lecture serait inatteignable
             cred_n = ready_nom[k] & ~credited_nom
             credited_nom |= cred_n
             self._new_reads_nom[k] = cred_n.sum(dim=1).float()
@@ -203,29 +218,31 @@ class SwarmScanMapEnv(SwarmQREnv):
 
         denom = self._readable.sum(dim=1).clamp_min(1)
         self._read_frac_readable = ((self._read & self._readable).sum(dim=1).float()) / denom.float()
-        self._read_frac = self._read_frac_readable  # base : terminaison & logs
+        self._read_frac = self._read_frac_readable  # utilisé par la classe mère (fin d'épisode, journaux)
 
         env_idx, tag_idx = torch.nonzero(newly, as_tuple=True)
         if env_idx.numel() > 0:
             self._mapper.mark_read(env_idx, self._tag_xy[tag_idx])
 
         clip = MAP_CFG.reward.shaping_clip_m
-        # cible du potentiel : tags non lus au gate COURANT. (Cibler les postures nominales à tous
-        # les niveaux = double travail infaisable en 120 s — testé, ça bloque le curriculum.
-        # La posture nominale devient le gate lui-même aux derniers crans : c'est lui qui l'exige.)
+        # cible du potentiel : les QR non lus avec la règle du niveau COURANT. Viser la posture
+        # nominale à tous les niveaux a été testé : double travail infaisable en 120 s, le
+        # curriculum se bloquait. Aux derniers crans, c'est la règle elle-même qui l'exige.
         unread = self._readable & ~self._read
         far = dist_tag.masked_fill(~unread.unsqueeze(0), 1e6)
         nearest, arg = far.min(dim=2)
         self._nearest = nearest.clamp(max=clip).transpose(0, 1)
         has_unread = unread.any(dim=1)
-        # potentiel : se rapprocher PAYE, et être lent PRÈS d'un tag paye aussi (gradient dense
-        # vers la posture nominale). Normalisé par le cap COURANT : normalisé par le nominal 0.6,
-        # le gradient était NUL entre 0.6 et 1.5 m/s — exactement la transition à apprendre.
+        # potentiel : se rapprocher d'un QR non lu rapporte, et être lent PRÈS de lui aussi (guide
+        # vers la posture de lecture). Lenteur mesurée par rapport à la limite du niveau COURANT :
+        # par rapport au nominal 0,6 m/s, le gradient était NUL entre 0,6 et 1,5 m/s, justement
+        # la zone à apprendre.
         v_ref = CFG.action.max_lin_vel_mps
         slowness = ((v_ref - self._lin_k) / max(v_ref - th["max_speed_mps"], 1e-3)).clamp(0.0, 1.0)
         proximity = torch.exp(-(self._nearest - g.read_distance_m).clamp(min=0.0) / 1.5)
         phi_val = -self._nearest / clip + MAP_CFG.reward.slow_potential * slowness * proximity
         phi = torch.where(has_unread.unsqueeze(1), phi_val, torch.zeros_like(phi_val))
+        # direction (sin, cos, par rapport au cap) du QR non lu le plus proche : info privilégiée
         for k in range(D):
             tag_pos = self._tag_xy[arg[k]]
             delta = tag_pos + self.scene.env_origins[:, :2] - self._drones[k].data.root_pos_w[:, :2]
@@ -237,12 +254,14 @@ class SwarmScanMapEnv(SwarmQREnv):
     # ------------------------------------------------------------------ perception
 
     def _raycast_full(self, k: int):
+        """Lance les 1800 rayons du lidar du drone k ; renvoie distances (m), points d'impact (repère entrepôt) et masque d'impact."""
         if self._wh_mesh is None:
             from isaaclab.sensors import MultiMeshRayCaster
             self._wh_mesh = next(iter(MultiMeshRayCaster.meshes.values()))
         origins = self.scene.env_origins
         r = self._ray_dirs.shape[0]
         base = (self._drones[k].data.root_pos_w + self._ray_off).unsqueeze(1)
+        # un seul maillage d'entrepôt (celui de env_0) : chaque drone y est ramené par translation
         starts = (base - origins.unsqueeze(1) + origins[0]).expand(self.num_envs, r, 3).contiguous()
         dirs = self._ray_dirs.unsqueeze(0).expand(self.num_envs, r, 3).contiguous()
         hits = raycast_mesh(starts, dirs, max_dist=MAX_DIST, mesh=self._wh_mesh)[0]
@@ -253,7 +272,7 @@ class SwarmScanMapEnv(SwarmQREnv):
         return dist, hits_local, valid
 
     def _ego_sectors(self, dist: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
-        """1800 rayons monde → 72 secteurs égocentriques (min sur 5 anneaux × 5°)."""
+        """Réduit les 1800 rayons à 72 secteurs de 5° tournés avec le drone (distance mini ÷ 8 m, entre 0 et 1)."""
         B = dist.shape[0]
         per_az = dist.view(B, CFG.lidar.num_channels, 360).min(dim=1).values
         yaw_deg = torch.rad2deg(yaw).round().long() % 360
@@ -263,6 +282,7 @@ class SwarmScanMapEnv(SwarmQREnv):
         return ego.view(B, S, 360 // S).min(dim=2).values / MAX_DIST
 
     def _refresh(self):
+        """Calcule une seule fois par pas : lidar, cap, position, collisions, puis (en plein pas) lecture QR et carte."""
         if self._refreshed:
             return
         self._lidar_cache, self._state_cache = [], []
@@ -286,9 +306,9 @@ class SwarmScanMapEnv(SwarmQREnv):
         if self._stepping:
             self._update_qr()
             m = MAP_CFG.map
-            # empreinte de couverture DÉCOUPLÉE du gate de lecture : portée et seuils de vitesse
-            # FIXES — couplée, l'économie fondait avec le niveau et dépasser le cap supprimait la
-            # taxe d'overlap (ne pas lire devenait rentable : le mur des niveaux 5-6)
+            # couverture INDÉPENDANTE de la règle de lecture (portée et vitesses fixes). Liée à elle,
+            # le revenu de couverture fondait avec le niveau et dépasser la vitesse limite supprimait
+            # la pénalité de recouvrement : ne pas lire devenait rentable (blocage aux niveaux 5-6)
             scan_gate = (self._lin_k <= m.scan_speed_mps) & (self._yawrate_k <= m.scan_yawrate_rps)
             self._scan_counts = self._mapper.update(
                 pos=self._pos_local, yaw=self._yaw,
@@ -301,8 +321,10 @@ class SwarmScanMapEnv(SwarmQREnv):
     # ------------------------------------------------------------------ boucle RL
 
     def _pre_physics_step(self, actions: dict) -> None:
+        """Déclenche les pannes prévues, mesure à-coups et dépassements de [−1, 1], puis borne les actions des 3 drones."""
         self._stepping = True
         self._refreshed = False
+        # panne : le drone « victime » s'arrête au pas tiré au reset (entre 25 % et 75 % de l'épisode)
         kill = (self._kill_step >= 0) & (self.episode_length_buf >= self._kill_step)
         newly_dead = kill & ~self._dead[torch.arange(self.num_envs, device=self.device), self._victim]
         if newly_dead.any():
@@ -310,21 +332,24 @@ class SwarmScanMapEnv(SwarmQREnv):
             self._dead[envs, self._victim[envs]] = True
             self._phi_fresh[envs] = True
         for i, a in enumerate(AGENTS):
-            raw = actions[a].clone().clamp(-3.0, 3.0)  # garde-fou : pénalités bornées, spirale impossible
+            raw = actions[a].clone().clamp(-3.0, 3.0)  # garde-fou : pénalités bornées, aucun emballement possible
+            # à-coups et dépassement mesurés AVANT l'écrêtage à [−1, 1] (sinon ils seraient invisibles)
             self._jerk_pre[a] = ((raw - self._prev_raw[a]) ** 2).sum(-1)
             self._bound_pen[a] = ((raw.abs() - 1.0).clamp(min=0.0) ** 2).sum(-1)
             self._prev_raw[a] = raw
             act = raw.clamp(-1.0, 1.0)
             norm_xy = act[:, :2].norm(dim=1, keepdim=True).clamp(min=1.0)
-            act[:, :2] = act[:, :2] / norm_xy  # vitesse PLANAIRE ≤ 1.5 m/s (bornée par axe, la diagonale montait à 2.12)
+            act[:, :2] = act[:, :2] / norm_xy  # vitesse HORIZONTALE ≤ 1,5 m/s (bornée axe par axe, la diagonale montait à 2,12)
             act[self._dead[:, i]] = 0.0
-            self._vel_state[i, self._dead[:, i]] = 0.0   # sinon le drone mort dérive ~1 s
+            self._vel_state[i, self._dead[:, i]] = 0.0   # drone en panne : vitesse remise à zéro, sinon il dérive ~1 s
             self._actions[a] = act
 
     def _get_observations(self) -> dict:
+        """Construit l'observation de chaque drone : ses vues de la carte + son vecteur d'état + les infos privilégiées."""
         self._refresh()
         maps = self._mapper.ego_maps(self._pos_local, self._yaw)
         th = self._curr.thresholds()
+        # seuils de lecture du niveau courant, mis à l'échelle (÷ 4 m, 60°, 2 m/s, 2 rad/s)
         th_vec = torch.tensor(
             [th["read_distance_m"] / 4.0, th["view_angle_deg"] / 60.0,
              th["max_speed_mps"] / 2.0, th["max_yawrate_rps"] / 2.0],
@@ -339,8 +364,9 @@ class SwarmScanMapEnv(SwarmQREnv):
             mates = []
             for j in range(D):
                 if j != k:
-                    rel = (self._drones[j].data.root_pos_w - d.root_pos_w) / 10.0
+                    rel = (self._drones[j].data.root_pos_w - d.root_pos_w) / 10.0   # position relative en dizaines de m
                     mates.append(torch.cat([rel, (~self._dead[:, j]).float().unsqueeze(-1)], dim=-1))
+            # vecteur d'état (VEC_DIM = 98 valeurs), vu par l'acteur et le critique
             vec = torch.cat(
                 [
                     self._lidar_cache[k],
@@ -358,6 +384,8 @@ class SwarmScanMapEnv(SwarmQREnv):
                 ],
                 dim=-1,
             )
+            # infos privilégiées (PRIV_DIM = 7), vues par le critique SEUL : fraction lue, fraction
+            # restante, potentiel, direction et distance du QR non lu le plus proche, part de drones en vie
             priv = torch.cat(
                 [
                     self._read_frac_readable.unsqueeze(-1),
@@ -373,6 +401,7 @@ class SwarmScanMapEnv(SwarmQREnv):
         return obs
 
     def _get_rewards(self) -> dict:
+        """Calcule la récompense de chaque drone (couverture, lectures, chocs, potentiel, commande, séparation) ; 0 s'il est en panne."""
         self._refresh()
         rw = MAP_CFG.reward
         gamma = MAP_CFG.train.gamma
@@ -385,12 +414,15 @@ class SwarmScanMapEnv(SwarmQREnv):
             self._milestones[:, i] |= crossed
             milestone_bonus += crossed.float() * rw.milestone_bonus
 
+        # aide « potentiel » γΦ' − Φ : paie le progrès vers un QR non lu entre deux pas ; mise à 0
+        # juste après un reset ou une panne (l'ancien Φ n'a alors plus de sens)
         phi_now = getattr(self, "_phi_now", self._phi)
         shaping = gamma * phi_now - self._phi
         shaping[self._phi_fresh] = 0.0
         self._phi = phi_now
         self._phi_fresh[:] = False
 
+        # avec les progrès du curriculum (t de 0 à 1) : la couverture paie moins, la lecture plus
         t = self._curr.progress
         cov_scale = 1.0 - rw.coverage_fade * t
         read_scale = 1.0 + rw.read_gain_rise * t
@@ -408,6 +440,7 @@ class SwarmScanMapEnv(SwarmQREnv):
             lectures = (read_scale * rw.new_qr * self._new_reads[k]
                         + read_scale * rw.new_qr_nominal * self._new_reads_nom[k]
                         + milestone_bonus / D)   # jalon d'ÉQUIPE : payé 1× au total, pas 1× par drone
+            # chocs : pénalité qui croît sous 0,5 m d'un obstacle, plus une pénalité de contact sous 0,25 m
             gap = ((rw.safe_distance_m - self._raw_min[:, k]) / rw.safe_distance_m).clamp(0.0, 1.0)
             chocs = -(rw.collision_scale * gap * gap
                       + rw.contact_penalty * (self._raw_min[:, k] < rw.collision_distance_m).float())
@@ -421,6 +454,7 @@ class SwarmScanMapEnv(SwarmQREnv):
             r += rw.shaping_scale * shaping[:, k]
             r -= rw.action_diff * self._jerk_pre[a]
             r -= rw.bound_penalty * self._bound_pen[a]
+            # séparation : pénalité graduée si deux drones en vie sont à moins de 0,6 m (à plat)
             for j in range(D):
                 if j != k:
                     sep = torch.norm(pos_xy[:, k] - pos_xy[:, j], dim=-1)
@@ -441,6 +475,7 @@ class SwarmScanMapEnv(SwarmQREnv):
         return out
 
     def _get_dones(self) -> tuple[dict, dict]:
+        """Renvoie (terminé, tronqué) : mission réussie (95 % des QR lisibles lus) ou temps écoulé."""
         self._refresh()
         mission = self._read_frac_readable >= MAP_CFG.train.mission_target
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -449,9 +484,11 @@ class SwarmScanMapEnv(SwarmQREnv):
     # ------------------------------------------------------------------ resets
 
     def _reset_idx(self, env_ids):
+        """Réinitialise les entrepôts finis : bilan d'épisode, curriculum, carte, pannes, configuration et départs."""
         if env_ids is None:
             env_ids = self._drones[0]._ALL_INDICES
         if self._qr_ready and len(env_ids) > 0:
+            # bilan des épisodes qui se terminent : curriculum, bascule d'entropie, journal (map_log)
             fracs = self._read_frac_readable[env_ids].tolist()
             self._curr.on_episodes_end(fracs)
             if (self._alg_ref is not None and not self._switched
@@ -495,6 +532,8 @@ class SwarmScanMapEnv(SwarmQREnv):
         self._prev_xy = None
         self._mapper.reset(env_ids)
 
+        # panne éventuelle (entraînement seulement) : un drone tiré au hasard, à un pas tiré entre
+        # 25 % et 75 % de l'épisode
         p_drop = self._curr.dropout_prob() if self._split == "train" else 0.0
         roll = torch.rand(len(env_ids), device=self.device)
         lo, hi = int(0.25 * self.max_episode_length), int(0.75 * self.max_episode_length)
@@ -506,17 +545,19 @@ class SwarmScanMapEnv(SwarmQREnv):
             self._resample_layout(env_ids)
             self._randomize_spawns(env_ids)
 
-        # budget d'épisode croissant avec le niveau (gate serré = mission physiquement plus longue)
+        # durée d'épisode croissante avec le niveau (règle plus stricte = mission plus longue) :
+        # 150 s + 15 s par cran, plafond 295 s
         c = MAP_CFG.curriculum
         self.cfg.episode_length_s = min(
             MAP_CFG.train.episode_length_s + c.episode_s_per_notch * self._curr.level, c.episode_s_max
         )
-        # LE FIX du bug des lectures jamais payées : sans ça, le _get_observations post-reset
-        # relançait _update_qr (récompenses déjà calculées AVANT le reset) → les lectures des
-        # spawns dirigés étaient créditées sans jamais être payées, à chaque épisode.
+        # Correction du bug des lectures jamais payées : sans cette ligne, l'observation calculée
+        # après le reset relançait _update_qr (les récompenses étaient déjà calculées AVANT le
+        # reset), donc les QR lus au départ étaient comptés sans jamais être payés.
         self._stepping = False
 
     def _randomize_spawns(self, env_ids: torch.Tensor):
+        """Place chaque drone au hasard, ou près d'un QR non lu (flanc tourné vers lui), loin des obstacles."""
         if self._wh_mesh is None:
             return
         n = len(env_ids)
@@ -525,6 +566,7 @@ class SwarmScanMapEnv(SwarmQREnv):
         y0, y1 = m.bounds_y_m[0] + 1.0, m.bounds_y_m[1] - 1.0
 
         def uniform(count):
+            """Tire `count` positions uniformes dans l'arène (marge 1 m, altitude 0,6 à 2,5 m) et des caps au hasard."""
             pos = torch.rand(count, 3, device=self.device)
             pos[:, 0] = x0 + pos[:, 0] * (x1 - x0)
             pos[:, 1] = y0 + pos[:, 1] * (y1 - y0)
@@ -536,6 +578,7 @@ class SwarmScanMapEnv(SwarmQREnv):
             pos, yaw = uniform(n)
             p_near = self._curr.spawn_near_prob() if self._split == "train" else 0.0
             near = torch.rand(n, device=self.device) < p_near
+            # départ aidé : à 0,8-2,0 m devant la face d'un QR non lu tiré au hasard, à sa hauteur
             if near.any():
                 envs = env_ids[near]
                 unread = self._readable[envs] & ~self._read[envs]
@@ -549,12 +592,13 @@ class SwarmScanMapEnv(SwarmQREnv):
                 cand = tag_p + tag_n * dist.unsqueeze(-1)
                 cand[:, 2] = tag_p[:, 2].clamp(self.cfg.alt_min + 0.1, self.cfg.alt_max - 0.1)
                 pos[near] = cand
-                # spawn dirigé FLANC vers le tag (caméras latérales) : nez vers le tag, aucune
-                # caméra ne le voit et le curriculum s'assèche silencieusement
+                # départ aidé le FLANC tourné vers le QR (caméras latérales) : nez vers le QR, aucune
+                # caméra ne le voit et le curriculum ne reçoit plus de lectures, sans alerte
                 side_pick = torch.randint(0, 2, (len(envs),), device=self.device).float() * 2.0 - 1.0
                 yaw[near] = (torch.atan2(-tag_n[:, 1], -tag_n[:, 0]) + side_pick * (math.pi / 2)
                              + (torch.rand(len(envs), device=self.device) - 0.5) * 0.6)
 
+            # position trop près d'un obstacle : nouveau tirage, puis repli sur une rangée près de (0, 0, 1 m)
             free = self._clearance_ok(pos)
             if (~free).any():
                 pos2, yaw2 = uniform(int((~free).sum()))
@@ -566,6 +610,7 @@ class SwarmScanMapEnv(SwarmQREnv):
                     pos[bad, 0] += (k - (D - 1) / 2.0) * 0.7
                     yaw[bad] = 0.0
 
+            # pose écrite dans Isaac : position + quaternion (cos(cap/2), 0, 0, sin(cap/2)), vitesse nulle
             root = self._drones[k].data.default_root_state[env_ids].clone()
             root[:, :3] = pos + self.scene.env_origins[env_ids]
             root[:, 3] = torch.cos(yaw / 2)
@@ -576,6 +621,7 @@ class SwarmScanMapEnv(SwarmQREnv):
             self._drones[k].write_root_velocity_to_sim(root[:, 7:], env_ids)
 
     def _clearance_ok(self, pos_local: torch.Tensor, min_clear: float = 0.45) -> torch.Tensor:
+        """Renvoie vrai pour chaque position dégagée : aucun obstacle à moins de 0,45 m sur 10 rayons (8 à plat, haut, bas)."""
         n = pos_local.shape[0]
         ang = torch.arange(8, device=self.device) * (2 * math.pi / 8)
         dirs = torch.stack([torch.cos(ang), torch.sin(ang), torch.zeros_like(ang)], dim=-1)

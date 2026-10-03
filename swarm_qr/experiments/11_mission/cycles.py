@@ -1,7 +1,7 @@
-"""La durée de chaque cycle de calcul, datée, face à l'inclinaison des drones : un dérèglement
-qui suit un ralentissement vient de la simulation, pas du contrôle.
+"""Affiche, par fenêtres de 20 s, la durée des cycles de calcul face à l'inclinaison des drones (sans simulateur).
 
-  cycles.py --dossier autre_v2
+But : un dérèglement qui suit un ralentissement viendrait de la simulation, pas du contrôle.
+  cycles.py --dossier autre_v2      (lit mission.json ; il faut un journal qui contient « cycles_t »)
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import numpy as np
 
 
 def main(dossier: Path) -> None:
+    """Affiche durée des cycles (ms) et inclinaison max par drone (degrés) par fenêtre de 20 s, puis les 8 cycles les plus longs."""
     m = json.loads((dossier / "mission.json").read_text())
     cyc = np.array(m.get("cycles_t", []), dtype=float)
     if not len(cyc):

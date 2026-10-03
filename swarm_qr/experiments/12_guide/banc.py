@@ -1,12 +1,8 @@
-"""Banc hors ligne du guide vision-langage — étape 8. Sans simulateur.
-
-  banc.py --missions ../11_mission/nominale ../11_mission/panne ../11_mission/autre --modeles smolvlm smolvlm-2b
-
-Pendant les missions, un instantané est pris toutes les trente secondes : la carte vue de
-dessus avec les zones candidates numérotées, l'image de la caméra de chaque drone, et — connu
-après coup — la zone qui contient le plus de panneaux non lus et le côté d'où ils se lisent.
-Chaque modèle répond aux mêmes instantanés ; on mesure son accord avec la bonne réponse, contre
-un choix au hasard. C'est la mesure qui décide si le guide est branché.
+"""Premier banc hors ligne du guide vision-langage (étape 8), sans simulateur : sur les instantanés
+des vols, le modèle voit la photo d'un drone et le plan annoté, choisit une zone puis un côté, et
+on compare à la bonne réponse connue après coup, au hasard et à la géométrie. Depuis swarm_qr/ :
+    $PY experiments/12_guide/banc.py --missions experiments/11_mission/nominale experiments/11_mission/panne experiments/11_mission/autre --modeles smolvlm smolvlm-2b
+Écrit resultats.json (ou resultats_description.json avec --description) dans ce dossier.
 """
 
 from __future__ import annotations
@@ -21,15 +17,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+HERE = Path(__file__).resolve().parent   # ce dossier : les résultats y sont écrits
+ROOT = HERE.parents[2]                   # racine du projet, pour importer swarm_qr
 sys.path.insert(0, str(ROOT))
 
 from swarm_qr import planning  # noqa: E402
 
 
 def instantanes(missions: list[Path]) -> list[dict]:
-    """Un cas par drone vivant et par instantané qui a au moins deux zones et une bonne réponse."""
+    """Lit les instantanés des dossiers de vol et renvoie les cas : un par drone vivant et par
+    instantané ayant au moins 2 zones et une bonne réponse (zone avec des QR encore non lus)."""
     cas = []
     for m in missions:
         journal = json.loads((m / "mission.json").read_text())
@@ -55,6 +52,8 @@ def instantanes(missions: list[Path]) -> list[dict]:
 
 def juge(nom: str, cas: list[dict], description: bool = False, device: str = "cuda",
          quant: str | None = None) -> dict:
+    """Fait répondre le modèle `nom` à tous les cas et renvoie son bilan : taux de bonne zone et
+    de bon côté, hasard, temps par question, mémoire GPU et réponses brutes."""
     import torch
     from swarm_qr.guide import Guide, decrit
 
@@ -72,6 +71,7 @@ def juge(nom: str, cas: list[dict], description: bool = False, device: str = "cu
         avis = g.conseille(cam, vue, c["zones"], description=texte)
         v = c["verite"]
         hasard_zone += 1.0 / len(c["zones"])
+        # le numéro de zone est relu dans la phrase de l'avis : « zone 3, cote ouest (...) »
         zone = None if avis is None else int(avis.phrase.split()[1].rstrip(","))
         cote = None if avis is None else avis.cote
         repondus += int(zone is not None)
@@ -93,10 +93,9 @@ def juge(nom: str, cas: list[dict], description: bool = False, device: str = "cu
 
 
 def references(cas: list[dict]) -> dict:
-    """Ce qu'un modèle doit battre : le hasard, mais aussi les réponses bêtes qui profitent de
-    la structure de l'entrepôt — les racks sont tous dans le même sens, donc « toujours ouest »
-    a raison une fois sur deux sans rien comprendre — et la zone de plus grande utilité
-    géométrique, c'est-à-dire ce que le cerveau choisit déjà sans guide."""
+    """Calcule ce qu'un modèle doit battre : le hasard, la zone la plus utile selon la géométrie (le
+    choix actuel du cerveau) et « toujours ouest » (racks tous dans le même sens : a raison une fois
+    sur deux sans rien comprendre)."""
     from collections import Counter
     n = max(len(cas), 1)
     cotes = Counter(c["verite"]["cote"] for c in cas)
@@ -110,6 +109,7 @@ def references(cas: list[dict]) -> dict:
 
 
 def main() -> None:
+    """Lit les options, construit les cas, juge chaque modèle et écrit le fichier de résultats."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--missions", nargs="+", required=True)
     ap.add_argument("--modeles", nargs="+", default=["smolvlm"])

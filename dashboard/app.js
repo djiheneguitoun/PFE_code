@@ -1,14 +1,18 @@
-/* ═══════════════════════════════════════════════════════════════
-   Drone Simulation Dashboard — JavaScript
-   Polls the Python backend every 2s, updates charts & tables.
-   ═══════════════════════════════════════════════════════════════ */
+// Logique de la page du tableau de bord « WiFi / 5G + exploration » (chargée par index.html).
+// Toutes les 2 s, demande /api/data au serveur dashboard_server.py puis redessine les cartes
+// (canvas), les graphiques Chart.js, les tableaux et le journal de la page.
+// Rien à lancer à part le serveur : python3 dashboard/dashboard_server.py, puis http://localhost:8050
 
+// Adresse de l'API : le même serveur que celui qui a envoyé la page.
 const API = window.location.origin + '/api';
+// Période d'interrogation du serveur, en ms (2 s).
 const POLL_MS = 2000;
+// Nombre de ticks gardés sur les courbes (tick = cycle de mesure des scripts 08/09, ou step de l'AIF).
 const MAX_HISTORY = 120;       // keep last 120 ticks on charts
 
-// roundRect polyfill for older Chromium/Electron
+// Ajoute roundRect (rectangle à coins arrondis) aux anciens navigateurs qui ne l'ont pas.
 if (!CanvasRenderingContext2D.prototype.roundRect) {
+    // Trace le contour d'un rectangle (x, y, largeur w, hauteur h, en px) à coins de rayon r.
     CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
         if (w < 2 * r) r = w / 2;
         if (h < 2 * r) r = h / 2;
@@ -21,7 +25,7 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
     };
 }
 
-// ─── Colors ───
+// ─── Couleurs communes (WiFi en cyan, 5G en violet) ───
 const C = {
     wifi: 'rgba(34,211,238,1)',
     wifiBg: 'rgba(34,211,238,.15)',
@@ -37,7 +41,7 @@ const C = {
     text: 'rgba(160,174,192,.7)',
 };
 
-// ─── Chart.js global defaults ───
+// ─── Réglages communs à tous les graphiques Chart.js ───
 Chart.defaults.color = C.text;
 Chart.defaults.borderColor = C.grid;
 Chart.defaults.font.family = "'Inter', sans-serif";
@@ -46,7 +50,7 @@ Chart.defaults.elements.point.radius = 2;
 Chart.defaults.elements.point.hoverRadius = 5;
 Chart.defaults.animation.duration = 400;
 
-// Pair-specific colors (up to 6 pairs)
+// Couleurs par paire de drones, une pour le WiFi et une pour la 5G (6 paires, puis on recommence)
 const PAIR_COLORS = [
     { wifi: '#22d3ee', fiveg: '#a78bfa' },
     { wifi: '#34d399', fiveg: '#f472b6' },
@@ -56,9 +60,11 @@ const PAIR_COLORS = [
     { wifi: '#2dd4bf', fiveg: '#c084fc' },
 ];
 
-// ─── State ───
+// ─── État de la page ───
+// Onglet affiché : 'explore' (Exploration), 'both' (Comparaison), 'wifi' ou '5g'.
 let activeScenario = 'explore';   // 'explore' | 'both' | 'wifi' | '5g'
 
+// Dernières données reçues et historique des courbes (une liste de valeurs par paire ou par drone).
 let state = {
     tick: 0,
     history: {
@@ -73,7 +79,7 @@ let state = {
     connected: false,
 };
 
-// Exploration state
+// Historique de l'exploration (pourcentages, entropies, numéros de step).
 let explState = {
     historyPct: [],
     historyEntropy: [],
@@ -81,10 +87,11 @@ let explState = {
     prevExplStep: -1,
 };
 
-// ─── Scenario Filter ───
+// ─── Filtre par onglet ───
+// Montre seulement les blocs dont l'attribut data-vis contient l'onglet choisi, puis redessine tout.
 function applyFilter(scenario) {
     activeScenario = scenario;
-    // Show/hide elements with data-vis attribute
+    // Montre / cache chaque élément selon son attribut data-vis
     document.querySelectorAll('[data-vis]').forEach(el => {
         const vis = el.getAttribute('data-vis').split(/\s+/);
         if (vis.includes(scenario)) {
@@ -95,13 +102,13 @@ function applyFilter(scenario) {
             el.classList.add('hidden-by-filter');
         }
     });
-    // Re-render charts with filtered datasets
+    // Redessine les graphiques avec les seules séries de l'onglet
     updateTimeCharts();
     if (state.currentWifi || state.current5g) {
         updateComparisonCharts(state.currentWifi, state.current5g);
         drawMap(state.currentWifi, state.current5g, state.livePositions || {});
     }
-    // Re-render explore canvases after filter (size may change)
+    // Recalcule la taille des canvas 50 ms plus tard (la mise en page a pu changer)
     setTimeout(() => {
         resizeExploreCanvases();
         resizeMap();
@@ -109,9 +116,10 @@ function applyFilter(scenario) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CHARTS
+// GRAPHIQUES (onglets Comparaison, WiFi et 5G)
 // ─────────────────────────────────────────────────────────────
 
+// Crée un graphique en courbes vide sur le canvas canvasId (titre d'axe yLabel, unité ajoutée aux infobulles).
 function makeTimeChart(canvasId, yLabel, unit = '') {
     const ctx = document.getElementById(canvasId).getContext('2d');
     return new Chart(ctx, {
@@ -127,6 +135,7 @@ function makeTimeChart(canvasId, yLabel, unit = '') {
                     backgroundColor: 'rgba(17,22,32,.92)',
                     borderColor: 'rgba(255,255,255,.1)', borderWidth: 1,
                     titleFont: { weight: 600 },
+                    // Texte de l'infobulle : « nom de la série : valeur à 2 décimales + unité ».
                     callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}${unit}` }
                 }
             },
@@ -138,6 +147,7 @@ function makeTimeChart(canvasId, yLabel, unit = '') {
     });
 }
 
+// Crée un graphique en barres vide sur le canvas canvasId (titre d'axe yLabel).
 function makeBarChart(canvasId, yLabel) {
     const ctx = document.getElementById(canvasId).getContext('2d');
     return new Chart(ctx, {
@@ -158,13 +168,14 @@ function makeBarChart(canvasId, yLabel) {
     });
 }
 
+// Les cinq graphiques réseau : 2 courbes dans le temps (RSSI = puissance reçue, latence), 3 barres de comparaison.
 const chartRSSI = makeTimeChart('chartRSSI', 'RSSI (dBm)', ' dBm');
 const chartLatency = makeTimeChart('chartLatency', 'Latence (ms)', ' ms');
 const chartCompRSSI = makeBarChart('chartCompareRSSI', 'RSSI (dBm)');
 const chartCompLat = makeBarChart('chartCompareLatency', 'Latence (ms)');
 const chartDist = makeBarChart('chartDistance', 'Distance (m)');
 
-// ─── Exploration Visual Canvases ───
+// ─── Canvas de l'onglet Exploration : carte globale, une carte par drone (3), quatre jauges ───
 const heroCanvas = document.getElementById('canvasHeroMap');
 const heroCtx = heroCanvas ? heroCanvas.getContext('2d') : null;
 const droneCanvases = [0, 1, 2].map(i => document.getElementById(`canvasDrone${i}`));
@@ -178,6 +189,7 @@ const gaugeSpeedCtx = gaugeSpeedCanvas ? gaugeSpeedCanvas.getContext('2d') : nul
 const gaugeDistCanvas = document.getElementById('canvasGaugeDist');
 const gaugeDistCtx = gaugeDistCanvas ? gaugeDistCanvas.getContext('2d') : null;
 
+// Donne à chaque canvas d'exploration la taille de son conteneur (hauteur minimale 180 px).
 function resizeExploreCanvases() {
     const all = [heroCanvas, ...droneCanvases, gaugeProgressCanvas, gaugeAltCanvas, gaugeSpeedCanvas, gaugeDistCanvas];
     all.forEach(c => {
@@ -191,12 +203,13 @@ resizeExploreCanvases();
 window.addEventListener('resize', resizeExploreCanvases);
 
 // ─────────────────────────────────────────────────────────────
-// MAP CANVAS
+// CARTE 2D DES POSITIONS (onglets réseau)
 // ─────────────────────────────────────────────────────────────
 
 const mapCanvas = document.getElementById('canvasMap');
 const mapCtx = mapCanvas.getContext('2d');
 
+// Ajuste la carte 2D à son conteneur (marge de 16 px, hauteur minimale 260 px).
 function resizeMap() {
     const rect = mapCanvas.parentElement.getBoundingClientRect();
     mapCanvas.width = rect.width - 16;
@@ -205,20 +218,24 @@ function resizeMap() {
 resizeMap();
 window.addEventListener('resize', resizeMap);
 
+// Couleur de chaque drone sur la carte 2D ; position par défaut (m) de l'antenne 5G, comme dans dashboard_server.py.
 const DRONE_COLORS = ['#22d3ee', '#34d399', '#a78bfa', '#fbbf24', '#f472b6', '#fb923c'];
 const GNB_POS = { x: 0, y: 0, z: 6 };
 
+// Dessine la carte 2D : grille, contour de l'entrepôt, antenne 5G, liens WiFi et 5G, drones avec leur altitude.
 function drawMap(wifiData, fivegData, data_positions) {
     const W = mapCanvas.width, H = mapCanvas.height;
     mapCtx.clearRect(0, 0, W, H);
 
-    // Warehouse bounds approx: x ∈ [-8, 8], y ∈ [-5, 5]
+    // Limites approximatives de l'entrepôt : x ∈ [-8, 8] m, y ∈ [-5, 5] m (zone affichée 20 m × 14 m)
     const scale = Math.min(W / 20, H / 14);
     const cx = W / 2, cy = H / 2;
+    // Convertit une abscisse x (m) en pixel horizontal (origine au centre du canvas).
     const toX = (x) => cx + x * scale;
+    // Convertit une ordonnée y (m) en pixel vertical (axe inversé : y vers le haut).
     const toY = (y) => cy - y * scale;  // invert Y
 
-    // Grid
+    // Grille : un trait tous les 2 m
     mapCtx.strokeStyle = 'rgba(255,255,255,.04)';
     mapCtx.lineWidth = 1;
     for (let gx = -8; gx <= 8; gx += 2) {
@@ -228,36 +245,36 @@ function drawMap(wifiData, fivegData, data_positions) {
         mapCtx.beginPath(); mapCtx.moveTo(0, toY(gy)); mapCtx.lineTo(W, toY(gy)); mapCtx.stroke();
     }
 
-    // Warehouse outline
+    // Contour de l'entrepôt : rectangle de 14 m × 9 m centré sur l'origine
     mapCtx.strokeStyle = 'rgba(255,255,255,.1)';
     mapCtx.lineWidth = 2;
     mapCtx.strokeRect(toX(-7), toY(4.5), 14 * scale, 9 * scale);
 
-    // Collect positions — prioritize live positions from API
+    // Positions des drones : fichier de positions d'abord, puis remplacées par les mesures WiFi et 5G
     let positions = {};
 
-    // 1. Start with live positions (always fresh from positions CSV)
+    // 1. Positions lues dans /tmp/drone_positions.csv
     if (data_positions) {
         Object.entries(data_positions).forEach(([id, pos]) => {
             positions[parseInt(id)] = pos;
         });
     }
 
-    // 2. Override/add from wifi pair data
+    // 2. Remplacées / complétées par celles des paires WiFi
     if (wifiData && wifiData.pairs) {
         wifiData.pairs.forEach(p => {
             if (p.pos_a) positions[p.drone_a] = p.pos_a;
             if (p.pos_b) positions[p.drone_b] = p.pos_b;
         });
     }
-    // 3. Override/add from 5G drone data
+    // 3. Puis par celles des mesures 5G
     if (fivegData && fivegData.drones) {
         fivegData.drones.forEach(d => {
             positions[d.id] = { x: d.x, y: d.y, z: d.z };
         });
     }
 
-    // Draw gNB
+    // Antenne 5G (gNB)
     if (fivegData) {
         const gnb = fivegData.gnb || GNB_POS;
         const gx = toX(gnb.x), gy = toY(gnb.y);
@@ -271,7 +288,7 @@ function drawMap(wifiData, fivegData, data_positions) {
         mapCtx.fillText('gNB', gx, gy - 14);
     }
 
-    // Draw links between pairs (WiFi)
+    // Liens WiFi entre drones (pointillés rouges si le signal est bloqué)
     if (wifiData && wifiData.pairs) {
         wifiData.pairs.forEach((p, i) => {
             const a = positions[p.drone_a], b = positions[p.drone_b];
@@ -288,7 +305,7 @@ function drawMap(wifiData, fivegData, data_positions) {
         });
     }
 
-    // Draw links to gNB (5G)
+    // Liens 5G drone → antenne (rouges si bloqués)
     if (fivegData && fivegData.drones) {
         const gnb = fivegData.gnb || GNB_POS;
         fivegData.drones.forEach(d => {
@@ -304,31 +321,31 @@ function drawMap(wifiData, fivegData, data_positions) {
         });
     }
 
-    // Draw drones
+    // Drones : halo, point, nom et altitude
     const droneIds = Object.keys(positions).map(Number).sort();
     droneIds.forEach((did, idx) => {
         const p = positions[did];
         const px = toX(p.x), py = toY(p.y);
         const col = DRONE_COLORS[idx % DRONE_COLORS.length];
 
-        // Glow
+        // Halo
         const grad = mapCtx.createRadialGradient(px, py, 0, px, py, 22);
         grad.addColorStop(0, col + '33');
         grad.addColorStop(1, col + '00');
         mapCtx.fillStyle = grad;
         mapCtx.beginPath(); mapCtx.arc(px, py, 22, 0, Math.PI * 2); mapCtx.fill();
 
-        // Dot
+        // Point
         mapCtx.fillStyle = col;
         mapCtx.beginPath(); mapCtx.arc(px, py, 6, 0, Math.PI * 2); mapCtx.fill();
 
-        // Label
+        // Nom du drone
         mapCtx.fillStyle = '#fff';
         mapCtx.font = '600 11px Inter';
         mapCtx.textAlign = 'center';
         mapCtx.fillText(`D${did}`, px, py - 12);
 
-        // Altitude
+        // Altitude z (m)
         mapCtx.fillStyle = 'rgba(255,255,255,.4)';
         mapCtx.font = '10px JetBrains Mono';
         mapCtx.fillText(`z=${p.z?.toFixed(1) || '?'}`, px, py + 18);
@@ -336,9 +353,10 @@ function drawMap(wifiData, fivegData, data_positions) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// QUALITY BADGE
+// ÉTIQUETTE DE QUALITÉ DU SIGNAL
 // ─────────────────────────────────────────────────────────────
 
+// Renvoie l'étiquette HTML de qualité : > -50 dBm Excellent, > -60 Good, > -70 Fair, sinon Weak (BLOCKED si pas de signal).
 function qualityBadge(rssi) {
     if (rssi === null || rssi === 'blocked' || rssi === 'error' || rssi === 'BLOCKED') {
         return '<span class="quality blocked">BLOCKED</span>';
@@ -352,38 +370,39 @@ function qualityBadge(rssi) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// UPDATE FUNCTIONS
+// MISE À JOUR DES ONGLETS RÉSEAU
 // ─────────────────────────────────────────────────────────────
 
+// Met à jour les six cartes chiffrées : nombre de drones, RSSI et latence moyens en WiFi et en 5G, tick.
 function updateKPIs(wifi, fiveg) {
-    // Drone count
+    // Nombre de drones distincts vus dans les mesures
     let droneSet = new Set();
     if (wifi?.pairs) wifi.pairs.forEach(p => { droneSet.add(p.drone_a); droneSet.add(p.drone_b); });
     if (fiveg?.drones) fiveg.drones.forEach(d => droneSet.add(d.id));
     document.getElementById('valDrones').textContent = droneSet.size || '0';
 
-    // WiFi avg RSSI
+    // RSSI WiFi moyen (paires bloquées exclues)
     if (wifi?.pairs?.length) {
         const valid = wifi.pairs.filter(p => p.rssi !== 'blocked' && p.rssi !== 'error').map(p => parseFloat(p.rssi));
         const avg = valid.length ? (valid.reduce((a, b) => a + b, 0) / valid.length) : null;
         document.getElementById('valRssiWifi').textContent = avg !== null ? avg.toFixed(1) + ' dBm' : '-- dBm';
     }
 
-    // WiFi avg latency
+    // Latence WiFi moyenne
     if (wifi?.pairs?.length) {
         const valid = wifi.pairs.filter(p => p.latency !== '---').map(p => parseFloat(p.latency));
         const avg = valid.length ? (valid.reduce((a, b) => a + b, 0) / valid.length) : null;
         document.getElementById('valLatWifi').textContent = avg !== null ? avg.toFixed(2) + ' ms' : '-- ms';
     }
 
-    // 5G avg RSSI
+    // RSSI 5G moyen (drone → antenne)
     if (fiveg?.drones?.length) {
         const valid = fiveg.drones.filter(d => d.rssi !== null && d.rssi !== 'BLOCKED').map(d => parseFloat(d.rssi));
         const avg = valid.length ? (valid.reduce((a, b) => a + b, 0) / valid.length) : null;
         document.getElementById('valRssi5g').textContent = avg !== null ? avg.toFixed(1) + ' dBm' : '-- dBm';
     }
 
-    // 5G avg latency
+    // Latence 5G moyenne (entre paires de drones)
     if (fiveg?.pairs?.length) {
         const valid = fiveg.pairs.map(p => parseFloat(p.latency));
         const avg = valid.length ? (valid.reduce((a, b) => a + b, 0) / valid.length) : null;
@@ -393,6 +412,7 @@ function updateKPIs(wifi, fiveg) {
     document.getElementById('valTick').textContent = state.tick;
 }
 
+// Remplit le tableau WiFi : une ligne par paire (RSSI, latence, distance, qualité).
 function updateWifiTable(wifi) {
     const tbody = document.querySelector('#tableWifi tbody');
     if (!wifi?.pairs?.length) {
@@ -414,6 +434,7 @@ function updateWifiTable(wifi) {
     }).join('');
 }
 
+// Remplit le tableau 5G : une ligne par drone (RSSI vers l'antenne, latence et gigue de sa première paire, qualité).
 function update5gTable(fiveg) {
     const tbody = document.querySelector('#table5g tbody');
     if (!fiveg?.drones?.length) {
@@ -421,12 +442,12 @@ function update5gTable(fiveg) {
         return;
     }
 
-    // Drone → gNB rows
+    // Une ligne par drone (lien drone → antenne)
     let rows = fiveg.drones.map(d => {
         const rssiStr = (d.rssi === null || d.rssi === 'BLOCKED')
             ? '<span style="color:var(--accent-red)">BLOCKED</span>'
             : parseFloat(d.rssi).toFixed(1) + ' dBm';
-        // Find latency from pairs
+        // Latence prise dans la première paire qui contient ce drone
         let lat = '--', jit = '--';
         if (fiveg.pairs) {
             const p = fiveg.pairs.find(p => p.drone_a === d.id || p.drone_b === d.id);
@@ -443,13 +464,14 @@ function update5gTable(fiveg) {
     tbody.innerHTML = rows.join('');
 }
 
+// Ajoute les mesures du tick courant à l'historique des courbes (au plus MAX_HISTORY points par série).
 function pushHistory(wifi, fiveg) {
     const h = state.history;
     const label = state.tick.toString();
     h.labels.push(label);
     if (h.labels.length > MAX_HISTORY) h.labels.shift();
 
-    // WiFi RSSI & latency per pair
+    // RSSI et latence WiFi, par paire
     if (wifi?.pairs) {
         wifi.pairs.forEach(p => {
             const key = `${p.drone_a}↔${p.drone_b}`;
@@ -464,7 +486,7 @@ function pushHistory(wifi, fiveg) {
         });
     }
 
-    // 5G RSSI per drone
+    // RSSI 5G, par drone
     if (fiveg?.drones) {
         fiveg.drones.forEach(d => {
             const key = `D${d.id}→gNB`;
@@ -475,7 +497,7 @@ function pushHistory(wifi, fiveg) {
         });
     }
 
-    // 5G latency per pair
+    // Latence 5G, par paire
     if (fiveg?.pairs) {
         fiveg.pairs.forEach(p => {
             const key = `${p.drone_a}↔${p.drone_b} 5G`;
@@ -486,13 +508,14 @@ function pushHistory(wifi, fiveg) {
     }
 }
 
+// Redessine les deux courbes dans le temps (RSSI et latence) avec les séries de l'onglet actif (WiFi plein, 5G en tirets).
 function updateTimeCharts() {
     const h = state.history;
 
     const showWifi = (activeScenario === 'both' || activeScenario === 'wifi');
     const show5g = (activeScenario === 'both' || activeScenario === '5g');
 
-    // RSSI chart: wifi pairs + 5G drones (filtered)
+    // Courbe RSSI : paires WiFi + drones 5G (selon l'onglet)
     let datasets = [];
     let idx = 0;
     if (showWifi) {
@@ -530,7 +553,7 @@ function updateTimeCharts() {
     chartRSSI.data.datasets = datasets;
     chartRSSI.update('none');
 
-    // Latency chart: wifi + 5G (filtered)
+    // Courbe latence : paires WiFi + paires 5G (selon l'onglet)
     datasets = [];
     idx = 0;
     if (showWifi) {
@@ -569,8 +592,9 @@ function updateTimeCharts() {
     chartLatency.update('none');
 }
 
+// Redessine les trois graphiques en barres : RSSI WiFi / 5G, latence WiFi / 5G, distance de chaque paire.
 function updateComparisonCharts(wifi, fiveg) {
-    // RSSI comparison bar chart
+    // Barres RSSI WiFi / 5G par paire
     const pairLabels = [];
     const wifiRssi = [];
     const fivegRssi = [];
@@ -583,11 +607,11 @@ function updateComparisonCharts(wifi, fiveg) {
         });
     }
 
-    // For 5G we average RSSI of both drones in each pair
+    // En 5G, chaque drone parle à l'antenne : le RSSI d'une paire est la moyenne de ses deux drones
     if (fiveg?.pairs && fiveg?.drones) {
         const droneRssi = {};
         fiveg.drones.forEach(d => { droneRssi[d.id] = d.rssi; });
-        // Match the same pair order as WiFi
+        // Même ordre de paires que le WiFi
         if (wifi?.pairs) {
             wifi.pairs.forEach(p => {
                 const ra = droneRssi[p.drone_a], rb = droneRssi[p.drone_b];
@@ -607,7 +631,7 @@ function updateComparisonCharts(wifi, fiveg) {
     ];
     chartCompRSSI.update('none');
 
-    // Latency comparison
+    // Barres de latence WiFi / 5G par paire
     const latLabels = [];
     const wifiLat = [];
     const fivegLat = [];
@@ -631,7 +655,7 @@ function updateComparisonCharts(wifi, fiveg) {
     ];
     chartCompLat.update('none');
 
-    // Distance chart
+    // Barres de distance entre drones (paires WiFi)
     const distLabels = [];
     const distVals = [];
     if (wifi?.pairs) {
@@ -653,12 +677,14 @@ function updateComparisonCharts(wifi, fiveg) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// EXPLORATION — VISUAL DRAWINGS (Canvas-based)
+// ONGLET EXPLORATION — DESSINS SUR CANVAS
 // ─────────────────────────────────────────────────────────────
 
+// Couleurs et noms des 3 drones de l'onglet Exploration.
 const DRONE_COLS = ['#22d3ee', '#34d399', '#a78bfa'];
 const DRONE_NAMES = ['Drone 0', 'Drone 1', 'Drone 2'];
 
+// Couleur et libellé de chaque état de drone (en vol, crash, récupération, posé).
 const STATUS_COLORS = {
     flying: '#4caf50',
     crashed: '#f44336',
@@ -672,6 +698,7 @@ const STATUS_LABELS = {
     landed: 'Posé',
 };
 
+// Renvoie la couleur d'une case : sombre si jamais vue, rouge / brun si p > 0,6 (occupée), vert si p < 0,4 (libre), gris sinon.
 function occColor(p, visited) {
     if (!visited) return '#111827';
     if (p > 0.75) return '#b91c1c';
@@ -681,17 +708,21 @@ function occColor(p, visited) {
     return '#374151';
 }
 
-// ── Coordinate helpers for a given grid ──
+// ── Conversion mètres → pixels pour une grille donnée ──
+// Renvoie {toX, toY} qui placent un point (m) de la grille g dans un canvas de W × H pixels.
 function makeCoord(g, W, H) {
     return {
+        // Abscisse x (m) → pixel horizontal.
         toX: (wx) => ((wx - g.origin_x) / (g.width * g.resolution)) * W,
+        // Ordonnée y (m) → pixel vertical (axe inversé : y vers le haut).
         toY: (wy) => H - ((wy - g.origin_y) / (g.height * g.resolution)) * H,
     };
 }
 
 // ═══════════════════════════════════════════════════════════
-// HERO MAP — Full occupancy grid + all drones + trails + targets
+// GRANDE CARTE — grille d'occupation complète + drones + traces + cibles
 // ═══════════════════════════════════════════════════════════
+// Dessine la grande carte : grille d'occupation, frontières, obstacles connus, traces, portée lidar et drones.
 function drawHeroMap(expl) {
     if (!heroCtx || !heroCanvas || !expl || !expl.grid) return;
     const g = expl.grid;
@@ -702,7 +733,7 @@ function drawHeroMap(expl) {
     const cellW = W / g.width;
     const cellH = H / g.height;
 
-    // Occupancy grid
+    // Grille d'occupation (ligne 0 de la grille en bas du canvas)
     for (let gy = 0; gy < g.height; gy++) {
         for (let gx = 0; gx < g.width; gx++) {
             const idx = gy * g.width + gx;
@@ -713,7 +744,7 @@ function drawHeroMap(expl) {
         }
     }
 
-    // Frontiers (yellow)
+    // Frontières en jaune (limite entre zone connue et zone inconnue)
     if (expl.frontiers) {
         heroCtx.fillStyle = 'rgba(234,179,8,0.5)';
         expl.frontiers.forEach(([gx, gy]) => {
@@ -723,7 +754,7 @@ function drawHeroMap(expl) {
 
     const { toX, toY } = makeCoord(g, W, H);
 
-    // Dynamic scene bounds from current exploration grid
+    // Cadre = bords de la grille d'exploration reçue
     const minX = g.origin_x;
     const maxX = g.origin_x + g.width * g.resolution;
     const minY = g.origin_y;
@@ -732,7 +763,7 @@ function drawHeroMap(expl) {
     heroCtx.lineWidth = 1.5;
     heroCtx.strokeRect(toX(minX), toY(maxY), toX(maxX) - toX(minX), toY(minY) - toY(maxY));
 
-    // Optional obstacle overlay from backend (if available)
+    // Obstacles connus envoyés par le serveur (boîtes et cylindres), s'il y en a
     const envObs = (expl.environment && Array.isArray(expl.environment.obstacles))
         ? expl.environment.obstacles
         : [];
@@ -763,7 +794,7 @@ function drawHeroMap(expl) {
         });
     }
 
-    // Trajectories (fading lines)
+    // Traces des drones (plus pâles pour les points anciens)
     if (expl.trajectories) {
         Object.entries(expl.trajectories).forEach(([did, pts], idx) => {
             if (pts.length < 2) return;
@@ -786,7 +817,7 @@ function drawHeroMap(expl) {
             const px = toX(d.x), py = toY(d.y);
             const col = DRONE_COLS[idx % 3];
 
-            // LiDAR range
+            // Portée du lidar (capteur laser de distance) : cercle pointillé, 8 m par défaut
             const lidarRange = (expl.environment && Number(expl.environment.lidar_max_range)) || 8.0;
             const lidarR = lidarRange * Math.min(
                 W / (g.width * g.resolution),
@@ -798,7 +829,7 @@ function drawHeroMap(expl) {
             heroCtx.beginPath(); heroCtx.arc(px, py, lidarR, 0, Math.PI * 2); heroCtx.stroke();
             heroCtx.setLineDash([]);
 
-            // Target dashed arrow
+            // Flèche pointillée vers la cible
             if (d.target_x != null && d.target_y != null) {
                 const tx = toX(d.target_x), ty = toY(d.target_y);
                 heroCtx.strokeStyle = col + 'aa';
@@ -806,7 +837,7 @@ function drawHeroMap(expl) {
                 heroCtx.setLineDash([6, 4]);
                 heroCtx.beginPath(); heroCtx.moveTo(px, py); heroCtx.lineTo(tx, ty); heroCtx.stroke();
                 heroCtx.setLineDash([]);
-                // Target crosshair
+                // Viseur sur la cible
                 heroCtx.strokeStyle = '#4ade80';
                 heroCtx.lineWidth = 2;
                 heroCtx.beginPath();
@@ -816,7 +847,7 @@ function drawHeroMap(expl) {
                 heroCtx.beginPath(); heroCtx.moveTo(tx, ty - 9); heroCtx.lineTo(tx, ty + 9); heroCtx.stroke();
             }
 
-            // Crash ring
+            // Anneau rouge si le drone s'est écrasé
             if (d.status === 'crashed') {
                 heroCtx.strokeStyle = '#f44336';
                 heroCtx.lineWidth = 3;
@@ -825,14 +856,14 @@ function drawHeroMap(expl) {
                 heroCtx.beginPath(); heroCtx.arc(px, py, 18, 0, Math.PI * 2); heroCtx.fill();
             }
 
-            // Glow
+            // Halo
             const grad = heroCtx.createRadialGradient(px, py, 0, px, py, 20);
             grad.addColorStop(0, col + '55');
             grad.addColorStop(1, col + '00');
             heroCtx.fillStyle = grad;
             heroCtx.beginPath(); heroCtx.arc(px, py, 20, 0, Math.PI * 2); heroCtx.fill();
 
-            // Drone icon: triangle pointing in yaw direction
+            // Icône du drone : triangle orienté selon son cap (yaw, en radians)
             const yaw = d.yaw || 0;
             heroCtx.save();
             heroCtx.translate(px, py);
@@ -846,13 +877,13 @@ function drawHeroMap(expl) {
             heroCtx.fill();
             heroCtx.restore();
 
-            // Label
+            // Nom du drone
             heroCtx.fillStyle = '#fff';
             heroCtx.font = '700 12px Inter';
             heroCtx.textAlign = 'center';
             heroCtx.fillText(`D${d.id}`, px, py - 16);
 
-            // Altitude text
+            // Altitude z (m) et vitesse v (m/s)
             heroCtx.fillStyle = 'rgba(255,255,255,.5)';
             heroCtx.font = '10px JetBrains Mono';
             heroCtx.fillText(`z=${d.z?.toFixed(1)}  v=${(d.speed || 0).toFixed(1)}`, px, py + 24);
@@ -861,8 +892,9 @@ function drawHeroMap(expl) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PER-DRONE BELIEF MAP — Each drone's individual view
+// CARTE PAR DRONE — la même grille, centrée sur ce que voit chaque drone
 // ═══════════════════════════════════════════════════════════
+// Dessine le panneau d'un drone : grille assombrie hors portée lidar, trace, cible, puis met à jour état et infos.
 function drawDroneBelief(ctx, canvas, expl, droneIdx) {
     if (!ctx || !canvas || !expl || !expl.grid) return;
     const g = expl.grid;
@@ -877,7 +909,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
     const cellW = W / g.width;
     const cellH = H / g.height;
 
-    // Draw full grid dimmed, then highlight drone's LiDAR radius
+    // Grille complète d'abord ; la zone hors portée lidar est assombrie juste après
     for (let gy = 0; gy < g.height; gy++) {
         for (let gx = 0; gx < g.width; gx++) {
             const idx = gy * g.width + gx;
@@ -888,7 +920,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
         }
     }
 
-    // Dim overlay outside LiDAR range
+    // Voile sombre partout sauf dans le disque de portée du lidar
     const { toX, toY } = makeCoord(g, W, H);
     const px = toX(d.x), py = toY(d.y);
     const lidarRange = (expl.environment && Number(expl.environment.lidar_max_range)) || 8.0;
@@ -905,12 +937,12 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
     ctx.fill();
     ctx.restore();
 
-    // LiDAR circle border
+    // Bord du disque lidar
     ctx.strokeStyle = col + '60';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px, py, lidarR, 0, Math.PI * 2); ctx.stroke();
 
-    // Drone trajectory (this drone only)
+    // Trace de ce drone seulement
     if (expl.trajectories) {
         const pts = expl.trajectories[droneIdx] || expl.trajectories[String(droneIdx)];
         if (pts && pts.length > 1) {
@@ -925,7 +957,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
         }
     }
 
-    // Target
+    // Cible
     if (d.target_x != null && d.target_y != null) {
         const tx = toX(d.target_x), ty = toY(d.target_y);
         ctx.strokeStyle = '#4ade80';
@@ -936,7 +968,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
         ctx.beginPath(); ctx.arc(tx, ty, 5, 0, Math.PI * 2); ctx.stroke();
     }
 
-    // Drone icon (triangle)
+    // Icône du drone (triangle orienté selon son cap)
     const yaw = d.yaw || 0;
     ctx.save();
     ctx.translate(px, py);
@@ -950,7 +982,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
     ctx.fill();
     ctx.restore();
 
-    // Status badge on panel
+    // Étiquette d'état dans l'en-tête du panneau
     const statusTag = document.getElementById(`statusDrone${droneIdx}`);
     if (statusTag) {
         const sc = STATUS_COLORS[d.status] || col;
@@ -959,7 +991,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
         statusTag.style.background = sc + '22';
     }
 
-    // Info bar
+    // Barre d'infos : position, altitude, vitesse, cible, cellules découvertes, distance parcourue
     const infoBar = document.getElementById(`infoDrone${droneIdx}`);
     if (infoBar) {
         const tgt = (d.target_x != null) ? `(${d.target_x.toFixed(1)}, ${d.target_y.toFixed(1)})` : '—';
@@ -972,7 +1004,7 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
             `<span class="di-item"><b>Dist</b> ${d.distance_traveled.toFixed(1)}m</span>`;
     }
 
-    // Flash panel on crash
+    // Panneau qui clignote en rouge si crash, bord orange pendant la récupération
     const panel = document.getElementById(`panelDrone${droneIdx}`);
     if (panel) {
         panel.classList.toggle('panel-crashed', d.status === 'crashed');
@@ -981,9 +1013,10 @@ function drawDroneBelief(ctx, canvas, expl, droneIdx) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// GAUGE DRAWINGS
+// JAUGES
 // ═══════════════════════════════════════════════════════════
 
+// Dessine la jauge circulaire du pourcentage exploré, avec le numéro de step et le nombre de cases vues.
 function drawGaugeProgress(expl) {
     if (!gaugeProgressCtx || !gaugeProgressCanvas) return;
     const W = gaugeProgressCanvas.width, H = gaugeProgressCanvas.height;
@@ -995,7 +1028,7 @@ function drawGaugeProgress(expl) {
     const cx = W / 2, cy = H / 2;
     const r = Math.min(cx, cy) - 20;
 
-    // Background arc
+    // Arc de fond (270°)
     ctx.strokeStyle = '#1f2937';
     ctx.lineWidth = 14;
     ctx.lineCap = 'round';
@@ -1003,7 +1036,7 @@ function drawGaugeProgress(expl) {
     ctx.arc(cx, cy, r, 0.75 * Math.PI, 2.25 * Math.PI);
     ctx.stroke();
 
-    // Progress arc
+    // Arc de progression, proportionnel au pourcentage exploré
     const endAngle = 0.75 * Math.PI + (pct / 100) * 1.5 * Math.PI;
     const grad = ctx.createLinearGradient(cx - r, cy, cx + r, cy);
     grad.addColorStop(0, '#065f46');
@@ -1014,7 +1047,7 @@ function drawGaugeProgress(expl) {
     ctx.arc(cx, cy, r, 0.75 * Math.PI, endAngle);
     ctx.stroke();
 
-    // Center text
+    // Pourcentage au centre
     ctx.fillStyle = '#fff';
     ctx.font = '700 32px Inter';
     ctx.textAlign = 'center';
@@ -1025,7 +1058,7 @@ function drawGaugeProgress(expl) {
     ctx.font = '12px Inter';
     ctx.fillText('exploré', cx, cy + 18);
 
-    // Step + cells
+    // Step et cases vues / cases totales
     if (expl) {
         ctx.fillStyle = 'rgba(255,255,255,.4)';
         ctx.font = '11px JetBrains Mono';
@@ -1033,6 +1066,7 @@ function drawGaugeProgress(expl) {
     }
 }
 
+// Dessine une barre d'altitude par drone (échelle 0-8 m), avec les lignes « danger 1 m » et « cible 4 m ».
 function drawGaugeAltitude(expl) {
     if (!gaugeAltCtx || !gaugeAltCanvas) return;
     const W = gaugeAltCanvas.width, H = gaugeAltCanvas.height;
@@ -1053,7 +1087,7 @@ function drawGaugeAltitude(expl) {
     const dangerY = barBot - (1.0 / maxAlt) * barH;
     const targetY = barBot - (4.0 / maxAlt) * barH;
 
-    // Danger zone line
+    // Ligne de danger à 1 m
     ctx.strokeStyle = 'rgba(244,67,54,0.4)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 3]);
@@ -1064,7 +1098,7 @@ function drawGaugeAltitude(expl) {
     ctx.textAlign = 'left';
     ctx.fillText('danger 1m', startX + totalW + 14, dangerY + 3);
 
-    // Target altitude line
+    // Ligne d'altitude cible à 4 m
     ctx.strokeStyle = 'rgba(74,222,128,0.3)';
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(startX - 10, targetY); ctx.lineTo(startX + totalW + 10, targetY); ctx.stroke();
@@ -1078,13 +1112,13 @@ function drawGaugeAltitude(expl) {
         const alt = d.z || 0;
         const fillH = Math.min((alt / maxAlt) * barH, barH);
 
-        // Bar background
+        // Fond de la barre
         ctx.fillStyle = '#1f2937';
         ctx.beginPath();
         ctx.roundRect(x, barTop, barW, barH, 6);
         ctx.fill();
 
-        // Bar fill
+        // Remplissage (rouge sous 1,5 m)
         const isDanger = alt < 1.5;
         const barGrad = ctx.createLinearGradient(x, barBot, x, barBot - fillH);
         barGrad.addColorStop(0, isDanger ? '#f44336' : col);
@@ -1094,19 +1128,20 @@ function drawGaugeAltitude(expl) {
         ctx.roundRect(x, barBot - fillH, barW, fillH, 6);
         ctx.fill();
 
-        // Value
+        // Valeur (m)
         ctx.fillStyle = '#fff';
         ctx.font = '700 14px JetBrains Mono';
         ctx.textAlign = 'center';
         ctx.fillText(`${alt.toFixed(1)}`, x + barW / 2, barBot - fillH - 8);
 
-        // Label
+        // Nom du drone
         ctx.fillStyle = col;
         ctx.font = '600 11px Inter';
         ctx.fillText(`D${d.id}`, x + barW / 2, barBot + 18);
     });
 }
 
+// Dessine un arc de vitesse par drone (échelle 0-10 m/s) et la distance parcourue par chacun (m).
 function drawGaugeSpeed(expl) {
     if (!gaugeSpeedCtx || !gaugeSpeedCanvas) return;
     const W = gaugeSpeedCanvas.width, H = gaugeSpeedCanvas.height;
@@ -1121,7 +1156,7 @@ function drawGaugeSpeed(expl) {
     const cy = H / 2 + 10;
     const maxSpeed = 10;
 
-    // Draw speed arcs for each drone
+    // Un arc par drone, emboîtés (16 px d'écart)
     expl.drones.forEach((d, idx) => {
         const col = DRONE_COLS[idx % 3];
         const speed = d.speed || 0;
@@ -1129,7 +1164,7 @@ function drawGaugeSpeed(expl) {
         const startA = 0.8 * Math.PI;
         const endA = startA + (Math.min(speed, maxSpeed) / maxSpeed) * 1.4 * Math.PI;
 
-        // Background arc
+        // Arc de fond
         ctx.strokeStyle = '#1f2937';
         ctx.lineWidth = 10;
         ctx.lineCap = 'round';
@@ -1137,21 +1172,21 @@ function drawGaugeSpeed(expl) {
         ctx.arc(cx, cy, r, 0.8 * Math.PI, 2.2 * Math.PI);
         ctx.stroke();
 
-        // Speed arc
+        // Arc de vitesse
         ctx.strokeStyle = col;
         ctx.lineWidth = 10;
         ctx.beginPath();
         ctx.arc(cx, cy, r, startA, endA);
         ctx.stroke();
 
-        // Speed label
+        // Vitesse en texte (m/s)
         ctx.fillStyle = col;
         ctx.font = '600 12px JetBrains Mono';
         ctx.textAlign = 'center';
         ctx.fillText(`D${d.id}: ${speed.toFixed(1)} m/s`, cx, cy + meterR + 12 + idx * 16);
     });
 
-    // Distance traveled labels
+    // Distance parcourue par chaque drone (m)
     ctx.fillStyle = 'rgba(255,255,255,.4)';
     ctx.font = '10px Inter';
     ctx.textAlign = 'center';
@@ -1161,6 +1196,7 @@ function drawGaugeSpeed(expl) {
     });
 }
 
+// Dessine le schéma des distances entre drones (en m), en rouge quand deux drones sont à moins de 3 m.
 function drawGaugeDist(expl) {
     if (!gaugeDistCtx || !gaugeDistCanvas) return;
     const W = gaugeDistCanvas.width, H = gaugeDistCanvas.height;
@@ -1179,7 +1215,7 @@ function drawGaugeDist(expl) {
         }
     }
 
-    // Draw as a small triangle diagram
+    // Drones placés sur un cercle (triangle pour 3 drones) : schéma, pas leurs vraies positions
     const cx = W / 2, cy = H / 2;
     const r = Math.min(W, H) / 2 - 50;
     const positions = expl.drones.map((d, i) => {
@@ -1187,7 +1223,7 @@ function drawGaugeDist(expl) {
         return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
     });
 
-    // Draw connections with distance
+    // Segments entre drones (rouges sous 3 m)
     pairs.forEach(({ a, b, dist }) => {
         const pa = positions[a], pb = positions[b];
         const tooClose = dist < 3;
@@ -1195,7 +1231,7 @@ function drawGaugeDist(expl) {
         ctx.lineWidth = tooClose ? 2 : 1;
         ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
 
-        // Distance label on line
+        // Distance écrite au milieu du segment
         const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
         ctx.fillStyle = tooClose ? '#f44336' : '#fff';
         ctx.font = '700 13px JetBrains Mono';
@@ -1204,7 +1240,7 @@ function drawGaugeDist(expl) {
         ctx.fillText(`${dist.toFixed(1)}m`, mx, my);
     });
 
-    // Draw drone nodes
+    // Disques des drones
     expl.drones.forEach((d, idx) => {
         const p = positions[idx];
         const col = DRONE_COLS[idx % 3];
@@ -1224,14 +1260,15 @@ function drawGaugeDist(expl) {
         ctx.fillText(`D${d.id}`, p.x, p.y - 18);
     });
 
-    // Coordination safety radius note
+    // Rappel du rayon de coordination (6 m)
     ctx.fillStyle = 'rgba(255,255,255,.3)';
     ctx.font = '10px Inter';
     ctx.textAlign = 'center';
     ctx.fillText('Rayon de coordination : 6m', cx, H - 10);
 }
 
-// ── Event Timeline (kept, visual) ──
+// ── Journal des événements de l'exploration ──
+// Affiche les 50 derniers événements (crash, alerte, cible, info) selon les cases cochées.
 function updateEventTimeline(expl) {
     if (!expl || !expl.events) return;
     const timeline = document.getElementById('eventTimeline');
@@ -1268,15 +1305,17 @@ function updateEventTimeline(expl) {
     }).join('');
 }
 
+// Bouton « Effacer » du journal des événements : vide la liste affichée.
 document.getElementById('btnClearEvents').addEventListener('click', () => {
     document.getElementById('eventTimeline').innerHTML =
         '<div class="event-empty">Journal effacé.</div>';
 });
 
+// Met à jour tout l'onglet Exploration : en-tête (step, %, état « Terminée » dès 95 %), cartes, jauges, journal.
 function updateExploration(expl) {
     if (!expl) return;
 
-    // Hero header KPIs
+    // Chiffres de l'en-tête de la grande carte
     const heroStep = document.getElementById('heroStep');
     const heroPct = document.getElementById('heroPct');
     const heroStat = document.getElementById('heroStatus');
@@ -1297,7 +1336,7 @@ function updateExploration(expl) {
         }
     }
 
-    // Draw all visual canvases
+    // Redessine tous les canvas de l'onglet
     drawHeroMap(expl);
     for (let i = 0; i < 3; i++) {
         drawDroneBelief(droneCtxs[i], droneCanvases[i], expl, i);
@@ -1310,10 +1349,11 @@ function updateExploration(expl) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// LOG
+// JOURNAL EN BAS DE PAGE
 // ─────────────────────────────────────────────────────────────
 
 const logBody = document.getElementById('logBody');
+// Ajoute une ligne horodatée au journal (type : data, info ou error) ; garde les 200 dernières.
 function addLog(msg, type = 'data') {
     const el = document.createElement('div');
     el.className = `log-entry ${type}`;
@@ -1324,30 +1364,33 @@ function addLog(msg, type = 'data') {
     logBody.scrollTop = logBody.scrollHeight;
 }
 
+// Bouton « Effacer » du journal : le vide et y note l'effacement.
 document.getElementById('btnClearLog').addEventListener('click', () => {
     logBody.innerHTML = '';
     addLog('Journal effacé.', 'info');
 });
 
 // ─────────────────────────────────────────────────────────────
-// STATUS
+// ÉTAT DE LA CONNEXION
 // ─────────────────────────────────────────────────────────────
 
 const pill = document.getElementById('statusPill');
+// Affiche l'état de la connexion au serveur dans l'en-tête (vert si ok, rouge sinon) avec le texte donné.
 function setStatus(ok, text) {
     pill.className = 'status-pill ' + (ok ? 'connected' : 'error');
     pill.querySelector('.status-text').textContent = text;
 }
 
-// Clock
+// Horloge de l'en-tête, mise à jour chaque seconde.
 setInterval(() => {
     document.getElementById('clock').textContent = new Date().toLocaleTimeString('fr-FR');
 }, 1000);
 
 // ─────────────────────────────────────────────────────────────
-// TABS — filter WiFi / 5G / both
+// ONGLETS — Exploration / Comparaison / WiFi / 5G
 // ─────────────────────────────────────────────────────────────
 
+// Un clic sur un onglet le rend actif, applique le filtre correspondant et le note dans le journal.
 document.querySelectorAll('.tab').forEach(btn => {
     btn.addEventListener('click', () => {
         document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
@@ -1358,11 +1401,13 @@ document.querySelectorAll('.tab').forEach(btn => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// POLLING
+// INTERROGATION DU SERVEUR
 // ─────────────────────────────────────────────────────────────
 
+// Dernier tick ajouté à l'historique des courbes.
 let prevTick = -1;
 
+// Demande /api/data, puis met à jour toute la page ; en cas d'erreur, passe l'état à « Déconnecté ».
 async function poll() {
     try {
         const res = await fetch(API + '/data');
@@ -1383,7 +1428,7 @@ async function poll() {
         state.current5g = fiveg;
         state.livePositions = livePositions;
 
-        // Only push history if tick changed
+        // Historique complété seulement quand le tick change (le tick avance d'au moins 1)
         if (state.tick !== prevTick) {
             state.tick = Math.max(state.tick, prevTick + 1);
             pushHistory(wifi, fiveg);
@@ -1403,7 +1448,7 @@ async function poll() {
         updateComparisonCharts(wifi, fiveg);
         drawMap(wifi, fiveg, livePositions);
 
-        // Exploration
+        // Onglet Exploration
         const expl = data.exploration;
         if (expl) {
             updateExploration(expl);
@@ -1418,12 +1463,12 @@ async function poll() {
     }
 }
 
-// Start polling
+// Démarrage : interrogation toutes les POLL_MS ms (et une fois tout de suite)
 setInterval(poll, POLL_MS);
 poll();
 
-// Initial draw
+// Carte 2D vide en attendant les premières données
 drawMap(null, null, {});
 
-// Apply initial filter
+// Onglet affiché au chargement : Exploration
 applyFilter('explore');

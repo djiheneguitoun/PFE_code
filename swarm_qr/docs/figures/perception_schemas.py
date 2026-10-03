@@ -1,32 +1,39 @@
-"""Les trois schémas de la section perception : la chaîne du composant, l'équivalence
-distance-angle, et les deux régimes de placement.
-
-    perception_schemas.py
+"""Dessine les trois schémas SVG de la section perception, écrits à côté du script :
+fig_perception_chaine.svg (chaîne du composant), fig_distance_apparente.svg (distance et angle,
+une seule limite) et fig_regimes.svg (placement par le lidar ou par la carte). PNG convertis à part.
+    python perception_schemas.py
 """
 import math
 from pathlib import Path
 
+# palette commune aux trois schémas
 C = {"fond": "#F6F8F7", "cadre": "#C9D3CF", "encre": "#16201C", "douce": "#5F6B66",
      "percep": "#0B7285", "carte": "#B07A22", "lu": "#2F9E44", "appris": "#364FC7",
      "alerte": "#C92A2A", "gris": "#98A4A0"}
 
 
 class Toile:
+    """Une toile SVG : accumule les éléments dessinés, puis les écrit dans un fichier."""
+
     def __init__(self, w, h):
+        """Crée une toile vide de w x h pixels."""
         self.w, self.h, self.out = w, h, []
 
     def txt(self, x, y, s, t=11.5, col=None, gras=False, anc="start", ital=False):
+        """Ajoute un texte en (x, y), avec sa taille, sa couleur, son ancrage, en gras ou en italique."""
         st = f'font-size="{t}" fill="{col or C["encre"]}" text-anchor="{anc}"'
         st += ' font-weight="650"' if gras else ""
         st += ' font-style="italic"' if ital else ""
         self.out.append(f'<text x="{x}" y="{y}" {st}>{s}</text>')
 
     def rect(self, x, y, w, h, col, r=8, fill="#FFFFFF", op=1.0, ep=1.6, dash=None):
+        """Ajoute un rectangle arrondi : contour, remplissage, opacité, pointillé en option."""
         d = f' stroke-dasharray="{dash}"' if dash else ""
         self.out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="{fill}" '
                         f'fill-opacity="{op}" stroke="{col}" stroke-width="{ep}"{d}/>')
 
     def boite(self, x, y, w, h, titre, lignes, col):
+        """Ajoute une boîte à bandeau de titre et lignes de texte ; les lignes « ~ » sont en italique gris."""
         self.rect(x, y, w, h, col)
         self.out.append(f'<rect x="{x}" y="{y}" width="{w}" height="26" rx="8" fill="{col}" opacity="0.12"/>')
         self.out.append(f'<rect x="{x}" y="{y+18}" width="{w}" height="8" fill="{col}" opacity="0.12"/>')
@@ -39,6 +46,7 @@ class Toile:
             yy += 15
 
     def ligne(self, pts, col, ep=1.8, dash=None, fleche=True):
+        """Ajoute une ligne brisée passant par `pts`, avec une flèche au bout par défaut."""
         d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         da = f' stroke-dasharray="{dash}"' if dash else ""
         mk = f' marker-end="url(#f{col[1:]})"' if fleche else ""
@@ -46,6 +54,7 @@ class Toile:
                         f'stroke-linejoin="round" stroke-linecap="round"/>')
 
     def eti(self, x, y, lignes, col):
+        """Ajoute une étiquette encadrée centrée en (x, y), sur une ou plusieurs lignes."""
         lignes = [lignes] if isinstance(lignes, str) else lignes
         lg, ht = max(len(s) for s in lignes) * 5.5 + 16, 14 * len(lignes) + 8
         self.rect(x - lg / 2, y - ht / 2, lg, ht, col, r=4, ep=0.9)
@@ -53,6 +62,7 @@ class Toile:
             self.txt(x, y - ht / 2 + 13 + 14 * i, s, 10, col, anc="middle", gras=True)
 
     def ecrit(self, nom):
+        """Assemble le SVG (fond, pointes de flèche, éléments) et l'écrit à côté du script sous `nom`."""
         mk = "".join(
             f'<marker id="f{c[1:]}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" '
             f'markerHeight="6" orient="auto-start-reverse">'
@@ -68,6 +78,8 @@ class Toile:
 
 # ---------------------------------------------------------------- 1. la chaîne
 def pipeline():
+    """Dessine la chaîne de perception d'un drone (capteurs, décodage, détection, placement 3D,
+    carte partagée) ; écrit fig_perception_chaine.svg."""
     t = Toile(1420, 560)
     t.txt(t.w / 2, 34, "Inside the perception component", 16, C["encre"], gras=True, anc="middle")
     t.txt(t.w / 2, 54, "one cycle, one vehicle", 11, C["douce"], anc="middle", ital=True)
@@ -107,18 +119,18 @@ def pipeline():
 
 # -------------------------------------------- 2. l'équivalence distance / angle
 def apparente():
-    """Un seul cône de vue, deux panneaux exactement inscrits dedans : l'un de face et loin,
-    l'autre incliné et proche. Les positions sont calculées, pas dessinées à la main."""
+    """Dessine un cône de vue où deux panneaux sont inscrits (incliné et proche, de face et loin),
+    positions calculées et non dessinées à la main ; écrit fig_distance_apparente.svg."""
     t = Toile(1040, 500)
     t.txt(t.w / 2, 34, "Why distance and angle are a single limit", 16, C["encre"], gras=True, anc="middle")
     t.txt(t.w / 2, 54, "a panel tilted by \u03b1 fills the same cone as an untilted panel 1 / cos \u03b1 times further away",
           11, C["douce"], anc="middle", ital=True)
 
-    CX, CY = 110, 250
+    CX, CY = 110, 250               # position de la caméra (px)
     TH = math.radians(8.0)          # demi-angle du cône
     AL = math.radians(45.0)         # inclinaison du panneau proche
-    D = 330.0                       # distance du panneau incliné, sur l'axe
-    DF = D / math.cos(AL)           # distance du panneau de face
+    D = 330.0                       # distance du panneau incliné, sur l'axe (px)
+    DF = D / math.cos(AL)           # distance du panneau de face (px)
 
     for sg in (-1, 1):
         t.ligne([(CX, CY), (CX + 630, CY + sg * 630 * math.tan(TH))], C["gris"], ep=1.1,
@@ -174,12 +186,14 @@ def apparente():
 
 # -------------------------------------------------- 3. les deux régimes
 def regimes():
+    """Dessine les deux régimes de placement d'une détection (distance donnée par le lidar jusqu'à
+    8 m, par la carte au-delà) ; écrit fig_regimes.svg."""
     t = Toile(1420, 620)
     t.txt(t.w / 2, 34, "Placing a detection : two regimes, separated by the LiDAR itself", 16,
           C["encre"], gras=True, anc="middle")
     t.txt(t.w / 2, 54, "plan view of one aisle, not to scale", 11, C["douce"], anc="middle", ital=True)
 
-    DX, DY, FACE = 110, 470, 200          # drone, et la face du rack
+    DX, DY, FACE = 110, 470, 200          # drone (x, y), et y de la face du rack (px)
     ECH = 115                             # px par mètre
     t.rect(120, 96, 1270, FACE - 96, C["gris"], r=4, fill=C["gris"], op=0.16, ep=1.2)
     t.txt(140, 128, "rack", 12, C["douce"], gras=True)
@@ -199,6 +213,7 @@ def regimes():
     t.txt(DX, DY + 34, "vehicle", 11, C["encre"], gras=True, anc="middle")
 
     def etiquette(x, col):
+        """Dessine une étiquette (petit rectangle plein) sur la face du rack, à l'abscisse x."""
         t.rect(x - 16, FACE - 5, 32, 14, col, r=2, fill=col, op=0.9, ep=0)
 
     # près : un rayon tombe sur l'étiquette
@@ -219,7 +234,7 @@ def regimes():
     t.eti(700, 478, ["no ray lands on it : the nearest one", "reaches the neighbour, or a gap",
                          "range from the map, first occupied cell"], C["appris"])
 
-    # la frontière
+    # la frontière : là où le drone est à 8 m de la face
     XB = DX + math.sqrt((8 * ECH) ** 2 - (DY - FACE) ** 2)
     t.ligne([(XB, 96), (XB, 560)], C["alerte"], ep=1.6, dash="8 5", fleche=False)
     t.eti(XB, 578, "r = 8 m,  two rays are now further apart than one map cell", C["alerte"])

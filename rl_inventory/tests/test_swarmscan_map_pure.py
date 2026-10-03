@@ -1,6 +1,6 @@
-"""Tests SANS Isaac des briques pures de SwarmScan-Map : mapper, layouts, curriculum.
+"""Tests sans Isaac des briques pures de l'arène v2 (swarmscan_map/) : carte partagée, configurations d'inventaire, curriculum.
 
-  ~/isaac5_env/bin/python rl_inventory/tests/test_swarmscan_map_pure.py
+Lancement depuis la racine : ~/isaac5_env/bin/python rl_inventory/tests/test_swarmscan_map_pure.py
 """
 
 import math
@@ -9,6 +9,7 @@ import sys
 
 import torch
 
+# rend le paquet rl_inventory importable (racine du projet = deux dossiers au-dessus)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from rl_inventory.swarmscan_map.config_map import MAP_CFG, CurriculumConfig, GateConfig, LayoutConfig, MapConfig
@@ -17,15 +18,17 @@ from rl_inventory.swarmscan_map.layouts import LayoutGenerator
 from rl_inventory.config_rl import CFG
 from rl_inventory.swarmscan_map.mapping import SwarmMapper
 
-CFG_MAX_LIN_VEL = CFG.action.max_lin_vel_mps
+CFG_MAX_LIN_VEL = CFG.action.max_lin_vel_mps  # m/s : vitesse max par axe (1,0)
 
 
 def _mapper(B=2, D=2):
+    """Renvoie une carte partagée SwarmMapper sur CPU pour B entrepôts et D drones, avec sa configuration."""
     cfg = MapConfig()
     return SwarmMapper(cfg, B, D, "cpu"), cfg
 
 
 def _update(m, pos, yaw, hits=None, scan_ok=True, alive=None):
+    """Met à jour la carte m (impacts LiDAR facultatifs, portée de scan 4 m, demi-champ 60°) ; renvoie les comptes de cases."""
     B, D = m.B, m.D
     R = 8
     if hits is None:
@@ -42,6 +45,7 @@ def _update(m, pos, yaw, hits=None, scan_ok=True, alive=None):
 
 
 def test_mapper_scan_and_occupancy():
+    """Vérifie qu'un impact LiDAR marque la case occupée, que seuls les côtés du drone sont scannés, et qu'un re-scan ne compte ni neuf ni en double."""
     m, cfg = _mapper()
     pos = torch.zeros(2, 2, 3)
     pos[:, 1, 1] = 8.0                      # drone 1 ailleurs
@@ -74,7 +78,7 @@ def test_mapper_scan_and_occupancy():
 
 
 def test_mapper_overlap_equipe_seulement():
-    """La taxe d'overlap ne doit punir que le travail en double AVEC UN COÉQUIPIER."""
+    """Vérifie que la pénalité de recouvrement (overlap) ne punit que le travail refait par un coéquipier, pas par le drone lui-même."""
     m, _ = _mapper(B=1, D=2)
     pos = torch.zeros(1, 2, 3)
     pos[..., 2] = 1.0                       # les 2 drones au MÊME endroit
@@ -93,12 +97,14 @@ def test_mapper_overlap_equipe_seulement():
 
 
 def test_mapper_bilateral_cone():
+    """Vérifie que l'empreinte de scan couvre la gauche et la droite du drone (2 caméras latérales), mais ni l'avant ni l'arrière."""
     m, cfg = _mapper(B=1, D=1)
     pos = torch.zeros(1, 1, 3)
     pos[..., 2] = 1.0
     _update(m, pos, torch.zeros(1, 1))      # cap +x
 
     def cell(x, y):
+        """Renvoie la valeur de scan (bande 0) de la case qui contient le point (x, y), en m."""
         return m.scan[0, 0, int((y - m.y0) / cfg.cell_m), int((x - m.x0) / cfg.cell_m)].item()
 
     assert cell(0.0, 2.0) == 1.0, "cône gauche absent"
@@ -109,6 +115,7 @@ def test_mapper_bilateral_cone():
 
 
 def test_mapper_marginal_agglutination():
+    """Vérifie que deux drones au même endroit n'ont aucune contribution propre (marginale), et que deux drones séparés en ont une."""
     m, _ = _mapper()
     pos = torch.zeros(2, 2, 3)
     pos[..., 2] = 1.0                       # 2 drones au MÊME endroit
@@ -126,6 +133,7 @@ def test_mapper_marginal_agglutination():
 
 
 def test_mapper_ego_rotation():
+    """Vérifie la rotation des vues centrées sur le drone : un QR lu 2 m devant apparaît en haut de la vue, et en bas une fois le drone retourné."""
     m, cfg = _mapper(B=1, D=1)
     m.qr_read[0, int((0.0 - m.y0) / cfg.cell_m), int((2.0 - m.x0) / cfg.cell_m)] = 1.0
     pos = torch.zeros(1, 1, 3)
@@ -133,6 +141,7 @@ def test_mapper_ego_rotation():
     qr_ch = 2 + cfg.n_bands + 1             # occ, explored, scan×nb, frontière, QR-LUS
 
     def crop_qr(yaw_val):
+        """Renvoie le canal « QR lus » de la petite vue (8 m) centrée sur le drone, pour le cap yaw_val (radians)."""
         maps = m.ego_maps(pos, torch.full((1, 1), yaw_val))
         return maps.view(len(cfg.crop_spans_m), C, P, P)[0, qr_ch]
 
@@ -145,6 +154,7 @@ def test_mapper_ego_rotation():
 
 
 def test_layouts_split_and_determinism():
+    """Vérifie que les configurations d'inventaire train/val/test sont disjointes, reproductibles par identifiant, et qu'un QR pré-lu est actif."""
     lg = LayoutGenerator(LayoutConfig(), n_tags=123, device="cpu")
     train, val, test = (set(lg.config_ids(s)) for s in ("train", "val", "test"))
     assert not (train & val) and not (train & test) and not (val & test), "splits non disjoints"
@@ -159,6 +169,7 @@ def test_layouts_split_and_determinism():
 
 
 def test_curriculum_adr():
+    """Vérifie le curriculum (difficulté de lecture réglée selon la réussite) : cran 0 sans contrainte de vitesse, montée, puis recul."""
     g = GateConfig()
     cur = GateCurriculum(g, CurriculumConfig(min_episodes_per_notch=10))
     t0 = cur.thresholds()
@@ -192,12 +203,8 @@ def test_curriculum_adr():
 
 
 def test_curriculum_promotion_atteignable():
-    """La barre de promotion doit être franchissable par une politique IMPARFAITE.
-
-    Le test qui manquait : pendant 34 runs la barre valait EMA > 0.88 tenue 25 épisodes
-    alors que la performance mesurée plafonnait à 0.39 de moyenne. Le curriculum n'a jamais
-    quitté le niveau 0, donc progress = 0, donc le gate nominal n'a jamais été entraîné.
-    """
+    """Vérifie qu'une politique imparfaite (taux de lecture moyen 0,70 ou 0,75) passe la barre de promotion dans plus de 90 % des cas.
+    Motif : pendant 34 entraînements, la barre (moyenne glissante > 0,88 sur 25 épisodes) était hors d'atteinte d'une performance de 0,39."""
     c = CurriculumConfig()
     g = GateConfig()
     hi, _ = GateCurriculum(g, c).thresholds_hi_lo()
@@ -223,11 +230,8 @@ def test_curriculum_promotion_atteignable():
 
 
 def test_couverture_pese_face_aux_lectures():
-    """La couverture est la récompense DENSE de la conception v2 : elle doit peser.
-
-    Mesuré sur le run socle_v2 : couvrir toute l'arène rapportait 124 points contre
-    111 tags × 25 = 2775 pour les lectures, parce que scan_norm suivait la taille du cône.
-    """
+    """Vérifie que couvrir une bande entière de l'arène rapporte plus de 20 % des points de lecture de 111 QR (111 × 25).
+    Motif mesuré (entraînement socle_v2) : couvrir toute l'arène ne rapportait que 124 points contre 2775 pour les lectures."""
     m = MAP_CFG.map
     r = MAP_CFG.reward
     cellules_bande = ((m.bounds_x_m[1] - m.bounds_x_m[0]) * (m.bounds_y_m[1] - m.bounds_y_m[0])) / m.cell_m**2
@@ -243,7 +247,7 @@ def test_couverture_pese_face_aux_lectures():
 
 
 def test_gates_de_couverture_non_contraignants():
-    """scan_speed/scan_yawrate sont documentés « non contraignants » : le vérifier."""
+    """Vérifie que les seuils de la carte de couverture (scan_speed, scan_yawrate) ne la coupent jamais, même à la vitesse 3D maximale (√2 m/s)."""
     v_max_3d = math.sqrt(2.0) * CFG.action.max_lin_vel_mps
     assert MAP_CFG.map.scan_speed_mps >= v_max_3d, (
         f"scan_speed_mps={MAP_CFG.map.scan_speed_mps} < vitesse 3D max {v_max_3d:.3f} : "
@@ -254,6 +258,7 @@ def test_gates_de_couverture_non_contraignants():
 
 
 def test_dims_coherence():
+    """Vérifie la taille des cartes observées : échelles × canaux × 32 × 32 (actuellement 2 × 9 × 1024 = 18 432 valeurs)."""
     from rl_inventory.swarmscan_map.config_map import MAP_CFG as m
     n_scales = len(m.map.crop_spans_m)
     assert m.map.n_channels == 6 + m.map.n_bands

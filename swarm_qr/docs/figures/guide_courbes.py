@@ -1,7 +1,7 @@
-"""La figure mesurée du guide sémantique : qui choisit la bonne zone, sur les 72 cas jamais vus
-de l'étape 8. Les chiffres du modèle sont relus dans `resultats_entrainement.json`.
-
-    guide_courbes.py
+"""Fabrique fig_guide.png : part des 72 cas jamais vus de l'étape 8 où chaque méthode choisit la bonne
+zone (zone la plus proche, planificateur géométrique, modèle avant et après l'entraînement LoRA).
+Chiffres du planificateur et du modèle relus dans experiments/12_guide/resultats_entrainement.json.
+    python guide_courbes.py
 """
 import json
 from pathlib import Path
@@ -10,11 +10,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-EXP = Path(__file__).resolve().parents[2] / "experiments"
-ICI = Path(__file__).resolve().parent
-ENCRE, DOUCE = "#16201C", "#5F6B66"
-REFERENCE, AVANT, GUIDE = "#98A4A0", "#8FA0DB", "#364FC7"
-PLUS_PROCHE = 0.25                       # règle de distance seule, étape 8
+EXP = Path(__file__).resolve().parents[2] / "experiments"   # swarm_qr/experiments
+ICI = Path(__file__).resolve().parent                        # la figure est écrite ici
+ENCRE, DOUCE = "#16201C", "#5F6B66"                          # couleurs du texte
+REFERENCE, AVANT, GUIDE = "#98A4A0", "#8FA0DB", "#364FC7"    # couleurs des barres
+PLUS_PROCHE = 0.25                       # part juste de la règle « zone la plus proche » (étape 8)
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans", "font.size": 10.5, "axes.edgecolor": "#C9D3CF",

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Campagne de l'étape 5 : les missions complètes à trois drones, puis leur jugement.
-#   bash campagne.sh nominale     3 drones, entrepôt 9033, 600 s simulées
-#   bash campagne.sh panne        idem, le drone 1 tombe en panne à 200 s
-#   bash campagne.sh autre        3 drones, entrepôt 9019
-#   bash campagne.sh guide        le banc hors ligne du guide sur les instantanés des trois missions
-#   bash campagne.sh guidee       3 drones, entrepôt 9019, le guide branché (λ = 1)
-#   bash campagne.sh juge NOM     le jugement seul, sans simulateur
+# Campagne de mise au point de l'étape 5 (3 drones, 600 s simulées, détecteur branché) : bash campagne.sh <phase>
+#   nominale (entrepôt 9033) | panne (idem, drone 1 en panne à 200 s) | autre (entrepôt 9019)
+#   guidee (9019, guide smolvlm branché, λ = 1) | guide (banc hors ligne du guide sur les instantanés des 3 missions)
+#   juge NOM (jugement seul, sans simulateur). Chaque mission écrit dans 11_mission/<phase>/.
 set -u
+# Python de l'environnement Isaac Sim (machine de simulation)
 PY=/home/djihene_guitoun/isaac5_env/bin/python
 ICI="$(cd "$(dirname "$0")" && pwd)"
+# écran virtuel :1 (Isaac Sim, fenêtres SITL), sorties non tamponnées, ultralytics n'installe rien tout seul
 export DISPLAY=:1 PYTHONUNBUFFERED=1 YOLO_AUTOINSTALL=false
 cd "$ICI" || exit 1
 
+# Vole une mission dans 11_mission/$1 (refus si un SITL tourne encore ; coupée après 3 h), puis la juge avec analyse.py.
 vole() {
   local nom="$1"; shift
   pgrep -x arducopter >/dev/null && { echo "ATTENTION : un SITL tourne encore"; exit 1; }

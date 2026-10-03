@@ -1,11 +1,9 @@
-"""Un petit entraînement QLoRA sur la mission : le modèle en 4 bits reste gelé, de petites couches
-apprennent à choisir la zone à partir du dossier épuré. Les exemples viennent de vols
-d'entraînement, l'évaluation de vols jamais vus — tous sur l'entrepôt 9033, ce qui est dit dans
-le résultat. Chaque cas d'entraînement est présenté plusieurs fois avec des numéros de zones
-mélangés différemment : le numéro ne veut rien dire, et le modèle doit l'apprendre.
-
-Sans image : avec le dossier épuré, la photo ne changeait pas le score (79 contre 78 %), et
-l'entraînement texte seul tient dans les 8 Go de la carte.
+"""Petit entraînement QLoRA (étape 8) : Qwen2.5-VL-3B en 4 bits reste gelé, un adaptateur LoRA
+apprend à choisir la zone à partir du dossier épuré, sans image (avec le dossier épuré, la photo ne
+changeait pas le score : 79 contre 78 % ; le texte seul tient dans les 8 Go de la carte).
+Vols d'entraînement et de test différents, mais tous sur l'entrepôt 9033. Depuis swarm_qr/ :
+    $PY experiments/12_guide/entraine.py --entrainement <vols> --test <vols> --modele <dossier du modèle>
+Écrit resultats_entrainement.json et l'adaptateur dans adaptateur_lora/.
 """
 from __future__ import annotations
 
@@ -20,6 +18,7 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).resolve().parent
+# racine du projet (pour swarm_qr) et ce dossier (pour banc et variantes) dans le chemin d'import
 sys.path.insert(0, str(HERE.parents[2]))
 sys.path.insert(0, str(HERE))
 
@@ -28,16 +27,19 @@ from variantes import _reponse_zone, melange                                    
 from swarm_qr.guide import texte_pour_le_guide                                          # noqa: E402
 
 def texte_du_cas(cas: dict, graine: int) -> tuple[str, int, int]:
-    """Le texte exactement comme en vol (dossier épuré, sans image), la bonne zone, celle de la
-    géométrie."""
+    """Renvoie le texte donné au modèle, le même qu'en vol (dossier épuré, numéros de zones mélangés
+    selon `graine`), la bonne zone et la zone de la géométrie."""
     zones, bonne, geo = melange(cas["zones"], cas["verite"], graine=graine)
     return texte_pour_le_guide(cas, zones), bonne, geo
 
 
 def exemples_d_entrainement(cas: list[dict], permutations: int) -> list[tuple[str, str]]:
+    """Fabrique les paires (texte, « ANSWER: n ») : chaque cas `permutations` fois, numéros mélangés
+    autrement à chaque fois pour que le numéro ne veuille rien dire ; renvoie la liste mélangée."""
     out = []
     for k, c in enumerate(cas):
         for p in range(permutations):
+            # graines de 10 000 et plus : jamais celles du test (graine = rang du cas)
             texte, bonne, _ = texte_du_cas(c, graine=10_000 + k * 97 + p)
             out.append((texte, f"ANSWER: {bonne}"))
     random.Random(0).shuffle(out)
@@ -45,6 +47,7 @@ def exemples_d_entrainement(cas: list[dict], permutations: int) -> list[tuple[st
 
 
 def charge_modele(modele: str):
+    """Charge le modèle en 4 bits (NF4, calculs en float16) sur le GPU ; renvoie (processeur, modèle)."""
     from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
     config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                 bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
@@ -56,7 +59,8 @@ def charge_modele(modele: str):
 
 
 def jetons(proc, texte: str, reponse: str | None):
-    """Le prompt au format de conversation du modèle ; les étiquettes ne couvrent que la réponse."""
+    """Met le texte au format de conversation du modèle ; renvoie (jetons, étiquettes), les étiquettes
+    ne couvrant que la réponse (None quand `reponse` est None)."""
     messages = [{"role": "user", "content": [{"type": "text", "text": texte}]}]
     prompt = proc.apply_chat_template(messages, add_generation_prompt=True)
     ids_prompt = proc.tokenizer(prompt, return_tensors="pt")["input_ids"][0]
@@ -65,11 +69,14 @@ def jetons(proc, texte: str, reponse: str | None):
     ids_rep = proc.tokenizer(reponse + proc.tokenizer.eos_token, return_tensors="pt",
                              add_special_tokens=False)["input_ids"][0]
     ids = torch.cat([ids_prompt, ids_rep])
+    # -100 : jetons ignorés par la perte, le modèle n'apprend que la réponse
     labels = torch.cat([torch.full_like(ids_prompt, -100), ids_rep])
     return ids, labels
 
 
 def entraine(proc, m, exemples, epoques: int, lr: float, accumulation: int, sortie: Path):
+    """Ajoute l'adaptateur LoRA (rang 8, attention du modèle de langage seulement), l'entraîne,
+    l'enregistre dans `sortie` et renvoie le modèle adapté."""
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     m = prepare_model_for_kbit_training(m, use_gradient_checkpointing=True)
     lora = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
@@ -103,6 +110,8 @@ def entraine(proc, m, exemples, epoques: int, lr: float, accumulation: int, sort
 
 @torch.no_grad()
 def evalue(proc, m, cas: list[dict], etiquette: str) -> dict:
+    """Fait répondre le modèle (sans tirage au hasard) à chaque cas de test ; renvoie le taux de
+    bonne zone, celui de la géométrie et le détail des réponses."""
     justes = repondus = geo_ok = 0
     details = []
     for k, c in enumerate(cas):
@@ -125,6 +134,8 @@ def evalue(proc, m, cas: list[dict], etiquette: str) -> dict:
 
 
 def main() -> None:
+    """Évalue le modèle avant et après l'entraînement sur les vols de test, compte les cas gagnés
+    et perdus, et écrit resultats_entrainement.json."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--entrainement", nargs="+", required=True, help="dossiers de mission pour apprendre")
     ap.add_argument("--test", nargs="+", required=True, help="dossiers de mission jamais vus")
@@ -145,6 +156,7 @@ def main() -> None:
     avant = evalue(proc, m, test, "avant entrainement, sans image")
     m = entraine(proc, m, exemples, a.epoques, a.lr, a.accumulation, HERE / a.sortie)
     apres = evalue(proc, m, test, "apres entrainement, sans image")
+    # cas gagnés (faux avant, juste après) et perdus (juste avant, faux après)
     w = sum(1 for x, y in zip(avant["details"], apres["details"]) if x["reponse"] != x["bonne"] and y["reponse"] == y["bonne"])
     l = sum(1 for x, y in zip(avant["details"], apres["details"]) if x["reponse"] == x["bonne"] and y["reponse"] != y["bonne"])
     print(f"cas gagnes par l'entrainement : {w}, perdus : {l}")

@@ -1,13 +1,8 @@
-"""Test T1.3 — le LiDAR (MultiMeshRayCaster) voit-il le vrai entrepôt ?
+"""Test T1.3 : le LiDAR (MultiMeshRayCaster, 360×5 rayons) voit-il le vrai entrepôt ? Affiche les distances mini/moyenne/maxi.
 
-Construit l'arène, place le drone, lit le LiDAR 360×5 et affiche des statistiques
-de distances : si le LiDAR voit les étagères/murs, la distance min est petite et
-une bonne partie des rayons touchent quelque chose.
-
-Lancement (venv Isaac Sim 5.1) :
-  source ~/isaac5_env/bin/activate
-  python ~/simulation_mc02/rl_inventory/test_lidar.py --headless --num_envs 2 \
-      --kit_args="--/rtx/verifyDriverVersion/enabled=false"
+Réussi si la distance minimale est sous 7,5 m et si plus de 5 % des rayons touchent un obstacle.
+Lancement depuis la racine (venv Isaac Sim 5.1) :
+  ~/isaac5_env/bin/python rl_inventory/tests/test_lidar.py --headless --num_envs 2 --kit_args="--/rtx/verifyDriverVersion/enabled=false"
 """
 
 import argparse
@@ -32,6 +27,7 @@ from rl_inventory.env import QRInventoryEnv, QRInventoryEnvCfg  # noqa: E402
 
 
 def main():
+    """Fait quelques pas sur place, lit le LiDAR dans l'observation et affiche ses statistiques avec le verdict OK / À VÉRIFIER."""
     cfg = QRInventoryEnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = QRInventoryEnv(cfg)

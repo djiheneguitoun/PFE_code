@@ -1,14 +1,8 @@
-"""Banc de mesure du détecteur — étape 7. Sans simulateur : il juge sur les jeux annotés.
+"""Banc de l'étape 7 : juge les variantes YOLO entraînées sur les jeux annotés (sans simulateur, avec GPU).
 
-  banc.py                      juge toutes les variantes entraînées, choisit, écrit resultats.json
-
-Quatre chiffres, dont le premier décide de tout :
-  1. la portée de repérage d'un QR, comparée à celle du repérage classique de l'étape 2, sur
-     les MÊMES images (le panneau visé, à distance connue) ;
-  2. les objets présents et non vus, par distance ;
-  3. les fausses alertes : sur les 300 images sans aucun QR de l'étape 2 (le classique en
-     donnait 27 %), et sur les entrepôts scellés ;
-  4. la vitesse et la mémoire pendant le vol.
+Mesure la portée de repérage (mêmes images que le repérage classique de l'étape 2), le rappel par
+distance, les fausses alertes et la vitesse ; choisit une variante, écrit resultats.json et portee.png,
+puis copie ses poids dans swarm_qr/assets/detecteur/.  Lancement : bash campagne.sh banc (ou $PY banc.py).
 """
 
 from __future__ import annotations
@@ -22,20 +16,22 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[2]          # racine du projet
 sys.path.insert(0, str(ROOT))
-JEU = HERE / "jeu"
-ETAPE2 = HERE.parent / "07_enveloppe"
+JEU = HERE / "jeu"              # images annotées produites par rendu.py
+ETAPE2 = HERE.parent / "07_enveloppe"   # dossier de l'étape 2 (enveloppe de lecture)
 
-CLASSES = ("qr", "carton")
+CLASSES = ("qr", "carton")      # indice YOLO 0 = qr, 1 = carton
+# m : bornes des tranches de distance des courbes
 BINS_DISTANCE = [0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 12.0]
-IOU_OK = 0.5
-IOU_IGNORE = 0.3
-SEUILS_CONF = (0.25, 0.5)
+IOU_OK = 0.5                    # recouvrement minimal (IoU) pour qu'une prédiction compte comme juste
+IOU_IGNORE = 0.3                # recouvrement avec un objet « ignoré » (trop caché) : prédiction tolérée
+SEUILS_CONF = (0.25, 0.5)       # seuils de confiance jugés ; les prédictions sont faites au plus bas
 PORTEE_TAUX = 0.9              # même définition qu'à l'étape 2 : dernière distance tenue à 90 %
 
 
 def charge(nom: str) -> list[dict]:
+    """Lit jeu/<nom>/manifeste.jsonl ; renvoie une ligne (dict) par image, ou [] si le jeu manque."""
     p = JEU / nom / "manifeste.jsonl"
     if not p.exists():
         return []
@@ -43,6 +39,7 @@ def charge(nom: str) -> list[dict]:
 
 
 def iou(a, b) -> float:
+    """Renvoie le recouvrement (intersection sur union, de 0 à 1) de deux cadres [x0, y0, x1, y1]."""
     x0, y0 = max(a[0], b[0]), max(a[1], b[1])
     x1, y1 = min(a[2], b[2]), min(a[3], b[3])
     inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
@@ -51,7 +48,7 @@ def iou(a, b) -> float:
 
 
 def predit(modele, dossier: Path, images: list[str], imgsz: int, conf: float) -> dict[str, list]:
-    """Toutes les prédictions d'un jeu, au seuil le plus bas ; les seuils plus hauts filtrent."""
+    """Lance le réseau sur les images d'un jeu (lots de 16) ; renvoie {image: [(classe, confiance, cadre)]} au seuil `conf`."""
     out = {}
     chemins = [str(dossier / "images" / im) for im in images]
     for k in range(0, len(chemins), 16):
@@ -65,8 +62,8 @@ def predit(modele, dossier: Path, images: list[str], imgsz: int, conf: float) ->
 
 
 def apparie(preds, objets, conf: float):
-    """Chaque vérité visible est trouvée ou manquée ; chaque prédiction est juste, tolérée
-    (elle recouvre un objet trop caché pour être annoté) ou fausse."""
+    """Apparie prédictions et objets visibles d'une image ; renvoie (objets trouvés, fausses alertes).
+    Une prédiction posée sur un objet « ignoré » (trop caché pour être annoté) est tolérée : ni juste ni fausse."""
     trouves, faux = {}, []
     for classe_i, classe in enumerate(CLASSES):
         verites = [o for o in objets if o["classe"] == classe]
@@ -92,6 +89,7 @@ def apparie(preds, objets, conf: float):
 
 
 def bin_de(d: float) -> int:
+    """Renvoie l'indice de la tranche de distance qui contient `d` (m)."""
     for i in range(len(BINS_DISTANCE) - 1):
         if BINS_DISTANCE[i] <= d < BINS_DISTANCE[i + 1]:
             return i
@@ -99,6 +97,7 @@ def bin_de(d: float) -> int:
 
 
 def courbe_par_distance(compte) -> list[dict]:
+    """Transforme les comptes {tranche: (n, trouvés)} en courbe : nombre d'objets et taux trouvé par tranche."""
     out = []
     for i in range(len(BINS_DISTANCE) - 1):
         n, ok = compte.get(i, (0, 0))
@@ -108,7 +107,8 @@ def courbe_par_distance(compte) -> list[dict]:
 
 
 def portee(courbe: list[dict], seuil: float = PORTEE_TAUX):
-    """Dernière distance à laquelle le taux tient encore à `seuil`, en partant du plus près."""
+    """Renvoie la portée (m) : borne haute de la dernière tranche où le taux reste ≥ `seuil`, en partant du plus près.
+    Les tranches de moins de 8 objets sont sautées ; None si aucune tranche ne tient."""
     p = None
     for c in courbe:
         if c["taux"] is None or c["n"] < 8:
@@ -121,7 +121,7 @@ def portee(courbe: list[dict], seuil: float = PORTEE_TAUX):
 
 
 def juge_jeu(modele, nom: str, imgsz: int) -> dict:
-    """Rappel par classe et par distance, fausses alertes par image, aux deux seuils."""
+    """Juge un jeu annoté : rappel par classe et par distance, fausses alertes par image, à chaque seuil ; renvoie un dict."""
     ms = charge(nom)
     if not ms:
         return {}
@@ -160,8 +160,8 @@ def juge_jeu(modele, nom: str, imgsz: int) -> dict:
 
 
 def juge_panneau_vise(modele, imgsz: int) -> dict:
-    """Sur les images de l'étape 2, le panneau visé est-il repéré ? Même définition et mêmes
-    images que le repérage classique, donc même courbe et même portée comparables."""
+    """Mesure, sur les images de l'étape 2, si le panneau visé est repéré, par distance réelle et apparente.
+    Mêmes images et même définition que le repérage classique : les portées sont directement comparables."""
     out = {}
     for nom in ("optique", "9019"):
         ms = charge(f"etape2_{nom}")
@@ -194,7 +194,7 @@ def juge_panneau_vise(modele, imgsz: int) -> dict:
 
 
 def repere_classique() -> dict:
-    """La courbe du repérage classique, mesurée à l'étape 2 sur les mêmes images."""
+    """Relit dans 07_enveloppe/resultats.json les courbes et portées du repérage classique (zxing, mêmes images)."""
     r = json.loads((ETAPE2 / "resultats.json").read_text())
     out = {}
     for nom, bloc in (("optique", r["optique"]["lecteurs"]["zxing"]), ("9019", r.get("second_entrepot", {}))):
@@ -217,6 +217,7 @@ def repere_classique() -> dict:
 
 
 def juge_sans_qr(modele, imgsz: int) -> dict:
+    """Compte les images sans QR de l'étape 2 (300) où le réseau invente un QR ; renvoie nombre et taux par seuil."""
     ms = charge("etape2_sans_qr")
     if not ms:
         return {}
@@ -230,6 +231,7 @@ def juge_sans_qr(modele, imgsz: int) -> dict:
 
 
 def vitesse(modele, imgsz: int) -> dict:
+    """Mesure le temps par image (une à la fois, demi-précision, après 20 de chauffe) et la mémoire GPU maximale (Mo)."""
     import torch
 
     ms = charge("rendu_9033")[:220]
@@ -246,19 +248,19 @@ def vitesse(modele, imgsz: int) -> dict:
 
 
 def seuil_mission(b: dict) -> float:
-    """Le seuil le plus bas qui garde les fausses alertes sous 1 % des images sans QR."""
+    """Renvoie le seuil de mission : le plus bas des seuils jugés qui garde les QR inventés sous 1 % des images sans QR."""
     return next((c for c in SEUILS_CONF if b["sans_qr"][f"conf_{c}"]["taux"] <= 0.01), max(SEUILS_CONF))
 
 
 def choisit(bilans: list[dict]) -> str:
-    """Au seuil de mission de chacune : la variante qui trouve le plus de QR sur les entrepôts
-    scellés, parmi celles dont la portée tient à 25 cm de la meilleure et qui ne coûtent pas
-    plus d'une fois et demie le temps de la plus rapide. Une demi-milliseconde ne vaut pas
-    quatre points de rappel."""
+    """Renvoie la variante qui trouve le plus de QR sur les entrepôts scellés, parmi celles dont la portée
+    est à 25 cm de la meilleure et le temps par image au plus 1,5 fois celui de la plus rapide."""
     def portee_de(b):
+        """Renvoie la portée (m) du panneau visé, au seuil de mission de la variante."""
         return b["panneau_vise"]["optique"][f"conf_{seuil_mission(b)}"]["portee_m"] or 0.0
 
     def rappel_de(b):
+        """Renvoie le rappel des QR sur les entrepôts scellés, au seuil de mission de la variante."""
         return b["scelles"][f"conf_{seuil_mission(b)}"]["qr"]["rappel"] or 0.0
 
     meilleure_portee = max(portee_de(b) for b in bilans)
@@ -268,6 +270,7 @@ def choisit(bilans: list[dict]) -> str:
 
 
 def figure(bilans: list[dict], classique: dict, retenue: str) -> None:
+    """Dessine portee.png : panneau visé repéré par distance (appris contre classique) et rappel par distance des scellés."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -303,6 +306,7 @@ def figure(bilans: list[dict], classique: dict, retenue: str) -> None:
 
 
 def main() -> None:
+    """Juge chaque variante d'entrainement.json, choisit la retenue, écrit resultats.json et installe ses poids et réglages."""
     os.environ["YOLO_AUTOINSTALL"] = "false"
     from ultralytics import YOLO
 

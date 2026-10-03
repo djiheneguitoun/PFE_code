@@ -1,8 +1,10 @@
 /* ══════════════════════════════════════════
-   Active Inference Dashboard — Style
-   Dark theme, modern, responsive
+   Feuille de style du tableau de bord de l'inférence active (AIF), chargée par index.html.
+   Thème sombre ; couleurs des phases de résilience : vert = normal, rouge = recovery, jaune = durable.
+   Rien à lancer : servie avec la page par python3 dashboard_aif/server.py.
    ══════════════════════════════════════════ */
 
+/* Palette : fonds, bordures, textes, couleurs d'accent, rayon des coins, ombre */
 :root {
     --bg:         #0f172a;
     --bg-card:    #1e293b;
@@ -32,7 +34,7 @@ body {
     line-height: 1.5;
 }
 
-/* ── HEADER ── */
+/* ── EN-TÊTE : logo, badges, état de la connexion, bouton pause ── */
 
 .topbar {
     display: flex;
@@ -123,7 +125,7 @@ body {
 }
 .btn-pause:hover { background: var(--border); color: var(--text); }
 
-/* ── LAYOUT ── */
+/* ── MISE EN PAGE ── */
 
 .dashboard {
     max-width: 1440px;
@@ -134,7 +136,7 @@ body {
     gap: 1.25rem;
 }
 
-/* ── CARDS ── */
+/* ── CARTES (blocs à fond gris foncé) ── */
 
 .card {
     background: var(--bg-card);
@@ -154,7 +156,7 @@ body {
 .card-header h2 { font-size: .95rem; font-weight: 600; }
 .card-header h3 { font-size: .85rem; font-weight: 500; color: var(--text-dim); }
 
-/* ── MAP ── */
+/* ── CARTE DE CROYANCE (pixels nets, sans lissage) ── */
 
 .map-section { width: 100%; }
 
@@ -197,7 +199,7 @@ body {
 }
 .leg-swatch.dot { border-radius: 50%; width: 10px; height: 10px; }
 
-/* ── KPI ROW ── */
+/* ── CARTES CHIFFRÉES (KPI) ── */
 
 .kpi-row {
     display: grid;
@@ -226,7 +228,7 @@ body {
     margin-top: .25rem;
 }
 
-/* ── CHARTS GRID ── */
+/* ── GRILLE DES GRAPHIQUES (3 colonnes) ── */
 
 .charts-grid {
     display: grid;
@@ -242,7 +244,7 @@ body {
     height: 220px;
 }
 
-/* ── DRONE TABLE ── */
+/* ── TABLEAUX ── */
 
 .drone-table-section .card { overflow-x: auto; }
 
@@ -271,7 +273,7 @@ td {
 
 tr:hover td { background: rgba(51,65,85,.2); }
 
-/* ── RESILIENCE PHASE BADGE ── */
+/* ── BADGE DE PHASE DE RÉSILIENCE (couleur selon data-phase) ── */
 
 .badge-phase {
     font-weight: 600;
@@ -283,7 +285,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 .badge-phase[data-phase="recovery"] { background: rgba(239,68,68,.2);  color: var(--red); }
 .badge-phase[data-phase="durable"]  { background: rgba(251,191,36,.2); color: var(--yellow); }
 
-/* ── PHASE KPI ── */
+/* ── CARTE CHIFFRÉE DE LA PHASE ── */
 
 .phase-value {
     font-size: 1.1rem !important;
@@ -294,7 +296,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 .phase-value[data-phase="recovery"] { color: var(--red) !important; }
 .phase-value[data-phase="durable"]  { color: var(--yellow) !important; }
 
-/* ── DRONE STATUS BADGES ── */
+/* ── ÉTIQUETTES D'ÉTAT DES DRONES (ACTIVE / LANDED) ── */
 
 .drone-status {
     display: inline-block;
@@ -308,7 +310,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 .drone-status.active  { background: rgba(16,185,129,.18); color: var(--green); }
 .drone-status.landed  { background: rgba(239,68,68,.18);  color: var(--red); }
 
-/* ── RESILIENCE EVENTS ── */
+/* ── ÉVÉNEMENTS DE RÉSILIENCE ── */
 
 .resilience-section { width: 100%; }
 
@@ -354,7 +356,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 .event-detail { color: var(--text-dim); }
 
 /* ══════════════════════════════════════════
-   CAMERA FEEDS + QR DETECTION
+   IMAGES DES CAMÉRAS + DÉCODAGE DES QR CODES
    ══════════════════════════════════════════ */
 
 .camera-section { width: 100%; }
@@ -383,7 +385,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
     grid-column: 1 / -1;
 }
 
-/* ── Single camera feed card ── */
+/* ── Carte d'une caméra (bord vert = décodé, rouge = échec, jaune = réponse du cache) ── */
 
 .cam-card {
     background: #0a0f1a;
@@ -450,7 +452,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
     text-align: center;
 }
 
-/* Tabs: Raw / Annotated */
+/* Onglets Raw / Annotated de chaque caméra */
 .cam-tabs {
     display: flex;
     gap: 0;
@@ -505,7 +507,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 .cam-stat-fail { color: var(--red); }
 .cam-stat-rate { color: var(--text-dim); }
 
-/* ── QR KPI Row ── */
+/* ── Cartes chiffrées du décodage QR ── */
 
 .kpi-row-qr .kpi-qr {
     border: 1px solid rgba(167,139,250,.2);
@@ -516,7 +518,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
     color: var(--purple) !important;
 }
 
-/* ── RESPONSIVE ── */
+/* ── ÉCRANS ÉTROITS (moins de 1200 px, puis moins de 900 px) ── */
 
 @media (max-width: 1200px) {
     .charts-grid { grid-template-columns: 1fr 1fr; }
@@ -530,7 +532,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 }
 
 /* ══════════════════════════════════════════
-   TABS NAV + PANELS
+   BARRE D'ONGLETS + PANNEAUX (un seul panneau visible : classe active)
    ══════════════════════════════════════════ */
 
 .tabs-nav {
@@ -571,7 +573,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 }
 
 /* ══════════════════════════════════════════
-   NS-3 TAB
+   ONGLET NS-3 (matrice des latences)
    ══════════════════════════════════════════ */
 
 .ns3-heatmap-wrap {
@@ -589,7 +591,7 @@ tr:hover td { background: rgba(51,65,85,.2); }
 #ns3Cloud { transition: color .3s; }
 
 /* ══════════════════════════════════════════
-   RUNS TAB
+   ONGLET RUNS (liste des vols à gauche, galerie d'images à droite)
    ══════════════════════════════════════════ */
 
 .runs-layout {

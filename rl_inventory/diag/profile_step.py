@@ -1,4 +1,8 @@
-"""Chronomètre chaque partie d'un pas de l'essaim pour localiser le goulot de débit."""
+"""Chronomètre chaque partie d'un pas de l'essaim (physique, LiDAR, QR, observations) pour trouver ce qui ralentit l'entraînement.
+
+Affiche un tableau en millisecondes ; ne modifie pas l'environnement.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/diag/profile_step.py --headless --num_envs 32
+"""
 
 import argparse
 
@@ -16,11 +20,13 @@ import time
 
 import torch
 
+# rend le paquet rl_inventory importable (racine du projet = deux dossiers au-dessus)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from rl_inventory.env import AGENTS, NUM_DRONES, SwarmQREnv, SwarmQREnvCfg  # noqa: E402
 
 
 def timeit(fn, n=30):
+    """Renvoie la durée moyenne d'un appel à fn, en ms, mesurée sur n appels (GPU synchronisé avant et après)."""
     torch.cuda.synchronize()
     t = time.perf_counter()
     for _ in range(n):
@@ -30,11 +36,13 @@ def timeit(fn, n=30):
 
 
 def main():
+    """Crée l'essaim, fait 20 pas de chauffe, chronomètre chaque étape d'un pas puis affiche le profil."""
     cfg = SwarmQREnvCfg()
     cfg.scene.num_envs = args.num_envs
     env = SwarmQREnv(cfg)
 
     def act():
+        """Renvoie des actions aléatoires uniformes dans [-1, 1] pour les 3 drones."""
         return {a: torch.empty((env.num_envs, 4), device=env.device).uniform_(-1.0, 1.0) for a in AGENTS}
 
     for _ in range(20):  # warmup
@@ -48,6 +56,7 @@ def main():
     t_scene = timeit(lambda: env.scene.update(dt))
 
     def read_lidar():
+        """Lit les mesures déjà calculées des 3 capteurs LiDAR Isaac (sans relancer les rayons)."""
         for k in range(NUM_DRONES):
             env._lidar_ranges(env._lidars[k])
 
@@ -56,6 +65,7 @@ def main():
     t_qr = timeit(lambda: env._update_qr())
 
     def obs():
+        """Recalcule les observations en vidant d'abord le cache du pas (LiDAR, états)."""
         env._refreshed = False
         env._get_observations()
 
@@ -63,6 +73,7 @@ def main():
 
     # vrai raycast forcé (le scene.update isolé est trompeur car caché)
     def force_lidar():
+        """Force le capteur Isaac de chaque drone à relancer tous ses rayons (vrai coût du LiDAR dynamique)."""
         for k in range(NUM_DRONES):
             env._lidars[k].update(dt, force_recompute=True)
 

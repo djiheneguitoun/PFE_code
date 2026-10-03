@@ -1,4 +1,9 @@
 #!/bin/bash
+# Installation, étape 3/5 : clone et compile ArduPilot SITL (le pilote automatique ArduPilot
+# simulé sur le PC, version ArduCopter) dans ~/ardupilot, puis le greffon ardupilot_gazebo dans
+# ~/ardupilot_gazebo, et ajoute ses chemins à ~/.bashrc. Relancé, il met les dépôts à jour.
+#   bash scripts/installation/03_install_ardupilot_sitl.sh   (première compilation ~5-10 min)
+# Arrête le script à la première commande en échec
 set -e
 
 echo "=============================================="
@@ -6,6 +11,7 @@ echo " [3/5] Installation d'ArduPilot SITL + Gazebo"
 echo "=============================================="
 
 # Partie A : Cloner et configurer ArduPilot
+# Dossier d'installation d'ArduPilot (branche par défaut du dépôt officiel)
 ARDUPILOT_DIR="$HOME/ardupilot"
 
 if [ -d "$ARDUPILOT_DIR" ]; then
@@ -45,6 +51,7 @@ echo "==> ArduPilot SITL (ArduCopter) compilé avec succès !"
 echo ""
 echo "Installation du plugin ardupilot_gazebo pour Gazebo Harmonic..."
 
+# Dossier du greffon qui relie Gazebo au pilote ArduPilot SITL
 PLUGIN_DIR="$HOME/ardupilot_gazebo"
 
 if [ -d "$PLUGIN_DIR" ]; then
@@ -71,6 +78,7 @@ echo ""
 echo "Configuration des variables d'environnement..."
 
 # Ajouter au .bashrc si pas déjà présent
+# (la ligne MARKER sert de repère pour ne pas ajouter deux fois le bloc)
 MARKER="# ArduPilot Gazebo Plugin"
 if ! grep -q "$MARKER" ~/.bashrc; then
     cat >> ~/.bashrc << 'EOF'

@@ -1,13 +1,8 @@
-"""Étape 7 — les images et leurs cadres, fabriqués sans un seul clic.
+"""Fabrique dans Isaac Sim les images annotées de l'étape 7 : caméra libre, cadres QR et cartons calculés sans aucun clic.
 
-  rendu.py --seed 3 --images 500                      caméra libre, poses au hasard dans l'entrepôt
-  rendu.py --seed 9033 --images 400 --relabel optique,sans_qr,vol,traversee
-                                                      + cadres des images de l'étape 2 (poses relues)
-
-Un cadre n'est écrit que si l'objet est réellement visible : sa surface est échantillonnée,
-chaque échantillon est projeté dans l'image, et un rayon du moteur physique confirme que rien
-ne s'interpose. Le cadre entoure les échantillons visibles, pas l'objet entier : un carton à
-moitié caché reçoit un cadre sur sa moitié visible.
+  rendu.py --seed 3 --images 500                                              500 poses au hasard → jeu/rendu_3/
+  rendu.py --seed 9033 --images 400 --relabel optique,sans_qr,vol,traversee   + cadres des images de l'étape 2 → jeu/etape2_*/
+Un cadre entoure seulement les points de l'objet qu'un rayon physique atteint sans obstacle (carton à moitié caché = demi-cadre).
 """
 
 from __future__ import annotations
@@ -20,7 +15,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[2]          # racine du projet
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -55,38 +50,40 @@ from swarm_qr.env.config import CAMERAS, INTERIOR, OBSTACLES, RACKS  # noqa: E40
 from swarm_qr.env.layout import make_layout  # noqa: E402
 from swarm_qr.experiments import _img  # noqa: E402
 
-CLASSES = ("qr", "carton")
-ETAPE2 = HERE.parent / "07_enveloppe"
+CLASSES = ("qr", "carton")      # indice YOLO 0 = qr, 1 = carton
+ETAPE2 = HERE.parent / "07_enveloppe"   # images et poses de l'étape 2 à ré-annoter
 SORTIE = Path(args.sortie)
 
 # --- tirage des poses ---
-Z_MIN, Z_MAX = 0.9, 5.3
-MARGE_MUR = 0.7
-MARGE_RACK = 0.5
-PART_VISE_RACK = 0.7          # le reste regarde n'importe où : allées, murs, bouts de rack
-LACET_SIGMA_DEG = 25.0
-TANGAGE_SIGMA_DEG, TANGAGE_MAX_DEG = 6.0, 15.0
-ROULIS_SIGMA_DEG, ROULIS_MAX_DEG = 3.0, 8.0
-RENDUS_PAR_IMAGE = 7          # retard mesuré à l'étape 2 : 5 rendus
+Z_MIN, Z_MAX = 0.9, 5.3       # m : hauteur de la caméra
+MARGE_MUR = 0.7               # m : distance minimale aux murs
+MARGE_RACK = 0.5              # m : distance minimale aux racks et obstacles
+PART_VISE_RACK = 0.7          # 70 % des poses regardent le rack le plus proche ; le reste n'importe où (allées, murs, bouts de rack)
+LACET_SIGMA_DEG = 25.0        # degrés : écart type du cap autour de la direction du rack
+TANGAGE_SIGMA_DEG, TANGAGE_MAX_DEG = 6.0, 15.0   # degrés : tangage tiré au hasard (écart type, borne)
+ROULIS_SIGMA_DEG, ROULIS_MAX_DEG = 3.0, 8.0      # degrés : roulis tiré au hasard (écart type, borne)
+RENDUS_PAR_IMAGE = 7          # rendus avant de lire l'image (le retard mesuré à l'étape 2 est de 5 rendus)
 
 # --- annotation ---
-GRILLE = 5                    # échantillons par côté de surface
-SEUIL_VISIBLE = {"qr": 0.30, "carton": 0.20}
-COTE_MIN_PX = {"qr": 8.0, "carton": 14.0}
-TOL_RAYON = 0.03              # + 1 % de la distance : le collider et la maille diffèrent d'autant
-PORTEE_MAX = 40.0            # tout l'entrepôt : un QR non annoté serait appris comme « rien »
+GRILLE = 5                    # points par côté : 5 × 5 = 25 points par panneau ou par face de carton
+SEUIL_VISIBLE = {"qr": 0.30, "carton": 0.20}     # part visible minimale ; en dessous, objet « ignoré »
+COTE_MIN_PX = {"qr": 8.0, "carton": 14.0}        # pixels : plus petit côté d'un cadre gardé
+TOL_RAYON = 0.03              # m, + 1 % de la distance : écart toléré entre point visé et point touché (collider ≠ forme visible)
+PORTEE_MAX = 40.0            # m : tout l'entrepôt est annoté, car un QR visible non annoté serait appris comme « rien »
 
 
 # ---------------------------------------------------------------- géométrie
 
 class Projecteur:
-    """La même projection que l'analyse de l'étape 2, vérifiée là-bas à quelques pixels près :
-    caméra en convention monde, avant = +X, gauche = +Y, haut = +Z."""
+    """Projection 3D → pixels, identique à celle de l'analyse de l'étape 2 (vérifiée à quelques pixels près).
+    Caméra en convention monde : avant = +X, gauche = +Y, haut = +Z."""
 
     def __init__(self, K, largeur: int, hauteur: int):
+        """Garde la matrice de calibration K et la taille de l'image (pixels)."""
         self.K, self.l, self.h = np.asarray(K, float), largeur, hauteur
 
     def pixels(self, cam_pos, R, points):
+        """Projette des points monde dans l'image ; renvoie (pixels u, v) et leur profondeur devant la caméra (m)."""
         c = (np.atleast_2d(points) - cam_pos) @ R
         with np.errstate(divide="ignore", invalid="ignore"):
             u = self.K[0, 2] - self.K[0, 0] * c[:, 1] / c[:, 0]
@@ -94,23 +91,26 @@ class Projecteur:
         return np.stack([u, v], axis=1), c[:, 0]
 
     def dedans(self, uv, marge: float = 0.0) -> np.ndarray:
+        """Renvoie, pour chaque pixel, vrai s'il tombe dans l'image élargie de `marge` pixels."""
         return ((uv[:, 0] >= -marge) & (uv[:, 0] < self.l + marge)
                 & (uv[:, 1] >= -marge) & (uv[:, 1] < self.h + marge))
 
 
 def rotation(cam_quat_wxyz) -> np.ndarray:
+    """Convertit un quaternion (w, x, y, z) en matrice de rotation 3 × 3."""
     w, x, y, z = cam_quat_wxyz
     return Rotation.from_quat([x, y, z, w]).as_matrix()
 
 
 def quat_wxyz(lacet_rad: float, tangage_rad: float, roulis_rad: float) -> np.ndarray:
+    """Renvoie le quaternion (w, x, y, z) de l'orientation donnée par lacet, tangage et roulis (radians)."""
     R = Rotation.from_euler("ZYX", [lacet_rad, -tangage_rad, roulis_rad]).as_matrix()
     x, y, z, w = Rotation.from_matrix(R).as_quat()
     return np.array([w, x, y, z])
 
 
 def boites_cartons(stage, chemins) -> list[dict]:
-    """Boîte de chaque carton gardé, en repère monde, par ses huit coins transformés."""
+    """Renvoie la boîte englobante (coins lo et hi, repère monde) de chaque carton gardé, calculée sur ses huit coins."""
     from pxr import Gf, UsdGeom
 
     from swarm_qr.env.qr_tags import _local_bounds
@@ -128,7 +128,7 @@ def boites_cartons(stage, chemins) -> list[dict]:
 
 
 def panneaux(tags) -> list[dict]:
-    """Le code lui-même (sans la marge blanche du panneau), comme les décodeurs le rendent."""
+    """Décrit chaque QR collé : centre, normale, axe horizontal et demi-côté du code seul (sans la marge blanche, comme les décodeurs le rendent)."""
     out = []
     for t in tags:
         n = np.array(t.normal, float)
@@ -142,13 +142,14 @@ def panneaux(tags) -> list[dict]:
 
 
 def grille(centre, axe_a, axe_b, demi_a, demi_b, n: int = GRILLE) -> np.ndarray:
+    """Renvoie n × n points répartis sur un rectangle (centre, deux axes, deux demi-côtés en m)."""
     s = np.linspace(-1.0, 1.0, n)
     return np.array([centre + a * demi_a * axe_a + b * demi_b * axe_b for a in s for b in s])
 
 
 def faces_visibles(boite, cam_pos) -> list[np.ndarray]:
-    """Échantillons sur les faces du carton tournées vers la caméra, un peu en retrait des
-    arêtes pour ne pas tomber à côté du collider."""
+    """Renvoie une grille de points par face du carton tournée vers la caméra, un peu en retrait des arêtes
+    (3 % de la taille) pour ne pas tomber à côté du collider."""
     lo, hi = boite["lo"], boite["hi"]
     centre, demi = (lo + hi) / 2.0, (hi - lo) / 2.0
     out = []
@@ -167,16 +168,17 @@ def faces_visibles(boite, cam_pos) -> list[np.ndarray]:
 # ---------------------------------------------------------------- physique
 
 class Physique:
+    """Accès aux rayons du moteur physique (PhysX), pour juger ce que la caméra voit vraiment."""
+
     def __init__(self):
+        """Récupère l'interface de requêtes de scène de PhysX."""
         from omni.physx import get_physx_scene_query_interface
 
         self.q = get_physx_scene_query_interface()
 
     def visible(self, origine, cible, proprietaire: str = "") -> bool:
-        """Rien ne s'interpose si le premier objet touché est le propriétaire du point visé,
-        ou si la distance touchée est celle du point. Le collider d'un carton est plus petit
-        que sa forme visible (mesuré : 10 cm de moins sur un rayon oblique), donc la distance
-        seule déclarait cachés des panneaux parfaitement visibles."""
+        """Renvoie vrai si rien ne cache `cible` : le premier objet touché est son carton, ou il est touché à la bonne distance.
+        On juge d'abord par l'identité, car le collider d'un carton est ~10 cm plus petit que sa forme visible (mesuré)."""
         v = np.asarray(cible, float) - origine
         d = float(np.linalg.norm(v))
         if d < 0.05:
@@ -189,15 +191,15 @@ class Physique:
         return abs(float(h["distance"]) - d) <= TOL_RAYON + 0.01 * d
 
     def touche(self, origine, direction, portee: float):
+        """Lance un rayon ; renvoie (distance en m, chemin de l'objet touché), ou (None, "") si rien n'est touché."""
         h = self.q.raycast_closest(np.asarray(origine, float).tolist(),
                                    np.asarray(direction, float).tolist(), float(portee))
         return (float(h["distance"]), str(h.get("collision", ""))) if h["hit"] else (None, "")
 
 
 def controle_colliders(stage, physique, gardes, cartons) -> None:
-    """Deux vérités physiques. Les cartons non retenus doivent avoir disparu de la scène,
-    sinon les rayons s'arrêteraient sur des cartons que la caméra ne voit pas. Et les cartons
-    gardés doivent, eux, arrêter les rayons, sinon tout serait déclaré visible."""
+    """Vérifie que les cartons non retenus ont quitté la scène et que 90 % des cartons gardés testés (40) arrêtent
+    les rayons ; sinon s'arrête (sans cela, des cartons invisibles cacheraient ou tout serait déclaré visible)."""
     restants = set(scene_mod._find_boxes(stage))
     if restants != set(gardes):
         raise RuntimeError(f"{len(restants - set(gardes))} cartons non retenus sont encore dans la scene")
@@ -215,11 +217,15 @@ def controle_colliders(stage, physique, gardes, cartons) -> None:
 # ---------------------------------------------------------------- annotation
 
 class Annoteur:
+    """Calcule les cadres des QR et des cartons visibles depuis une pose de caméra."""
+
     def __init__(self, projecteur: Projecteur, physique: Physique, cartons, panneaux):
+        """Garde le projecteur, l'accès aux rayons, les boîtes des cartons et les panneaux."""
         self.pr, self.ph, self.cartons, self.panneaux = projecteur, physique, cartons, panneaux
 
     def _objet(self, classe, cam_pos, R, echantillons, centre, extra, proprietaire: str):
-        """Cadre des échantillons visibles ; None si l'objet est hors champ ou derrière."""
+        """Renvoie le cadre (dict) des points visibles d'un objet, marqué « ignoré » s'il est trop caché ou trop petit.
+        Renvoie None si l'objet est hors champ, derrière la caméra ou entièrement caché."""
         pts = np.concatenate(echantillons)
         uv, prof = self.pr.pixels(cam_pos, R, pts)
         devant = prof > 0.05
@@ -251,6 +257,7 @@ class Annoteur:
                 "visible": round(part, 3), "ignore": not garde, **extra}
 
     def annote(self, cam_pos, cam_quat) -> list[dict]:
+        """Renvoie les objets (QR puis cartons) vus depuis cette pose, avec cadre, distance, part visible et drapeau « ignoré »."""
         cam_pos = np.asarray(cam_pos, float)
         R = rotation(cam_quat)
         avant = R[:, 0]
@@ -284,6 +291,7 @@ class Annoteur:
 # ---------------------------------------------------------------- tirage des poses
 
 def dans_un_rack(x, y, layout, marge) -> bool:
+    """Renvoie vrai si le point (x, y) est dans l'emprise d'un rack ou d'un obstacle, élargie de `marge` (m)."""
     for r in layout.racks:
         (x0, x1), (y0, y1) = r.x_bounds, r.y_bounds
         if x0 - marge < x < x1 + marge and y0 - marge < y < y1 + marge:
@@ -295,6 +303,7 @@ def dans_un_rack(x, y, layout, marge) -> bool:
 
 
 def tire_pose(rng, layout):
+    """Tire une pose de caméra libre au hasard (70 % tournées vers le rack le plus proche) ; renvoie (position, quaternion)."""
     for _ in range(1000):
         x = rng.uniform(INTERIOR.x_min + MARGE_MUR, INTERIOR.x_max - MARGE_MUR)
         y = rng.uniform(INTERIOR.y_min + MARGE_MUR, INTERIOR.y_max - MARGE_MUR)
@@ -316,7 +325,10 @@ def tire_pose(rng, layout):
 # ---------------------------------------------------------------- écriture
 
 class Jeu:
+    """Un jeu d'images annotées en cours d'écriture : images/, labels/ (format YOLO), manifeste.jsonl, meta.json."""
+
     def __init__(self, nom: str, seed: int):
+        """Crée les dossiers du jeu et ouvre son manifeste."""
         self.dossier = SORTIE / nom
         (self.dossier / "images").mkdir(parents=True, exist_ok=True)
         (self.dossier / "labels").mkdir(parents=True, exist_ok=True)
@@ -324,6 +336,7 @@ class Jeu:
         self.seed, self.nom, self.n = seed, nom, 0
 
     def ecrit(self, image_bgr, source: Path | None, cam_pos, cam_quat, objets, largeur, hauteur, extra=None):
+        """Enregistre une image (ou un lien vers une image existante), ses cadres YOLO et sa ligne de manifeste."""
         base = f"{self.seed}_{self.n:05d}"
         cible = self.dossier / "images" / f"{base}.jpg"
         if image_bgr is not None:
@@ -348,6 +361,7 @@ class Jeu:
         self.n += 1
 
     def clot(self, K, largeur, hauteur):
+        """Ferme le manifeste et écrit meta.json (nombre d'images, taille, calibration K)."""
         self.manifeste.close()
         (self.dossier / "meta.json").write_text(json.dumps({
             "seed": self.seed, "images": self.n, "classes": list(CLASSES),
@@ -359,6 +373,7 @@ class Jeu:
 # ---------------------------------------------------------------- programme
 
 def main() -> None:
+    """Construit l'entrepôt, vérifie calibration, colliders et aplomb, puis rend et annote les images demandées."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=False, n_drones=0)
     stage = omni.usd.get_context().get_stage()
@@ -484,6 +499,7 @@ def main() -> None:
         par_run = {}
         for m in lignes:
             par_run.setdefault(m["run"], {})[m["indice"]] = m
+        # jeu « traversee » : l'image n est annotée avec la pose n-1 (retard d'une image) ; sinon même indice
         retard = 1 if nom == "traversee" else 0
         jeu = Jeu(f"etape2_{nom}", args.seed)
         sautees = 0

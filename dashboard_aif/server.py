@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
-"""
-Active Inference Dashboard — Backend Server
-============================================
-Serves the dashboard UI and REST API reading simulation JSON outputs.
-Includes QR code detection state and camera frame serving.
+"""Serveur du tableau de bord de l'inférence active (AIF) : sert la page web et une API JSON (port 8060).
 
-New endpoints (Tâche 5 du PROMPT_CLAUDE_CODE.md) :
-    /api/ns3                          → parse /tmp/ns3_output.csv ou
-                                         /tmp/drone_latency_ns3.csv (5G)
-                                         + état réseau lu depuis aif_state.json
-    /api/runs                         → liste des dossiers logs/runs/* avec
-                                         leur config.json
-    /api/run/<tag>/img/<name>         → sert un PNG du run (belief_map_final.png,
-                                         trajectories.png, ...)
-
-Usage:
-    python3 server.py [--port 8060] [--runs-dir <path>]
-    Open http://localhost:8060
+Relit à chaque requête les fichiers écrits dans /tmp par scripts/12_aif_isaac_sim.py (état et
+historique AIF, décodage des QR codes, images des caméras, latences NS-3) et liste les vols
+enregistrés dans logs/runs/. Lancement depuis la racine du projet :
+python3 dashboard_aif/server.py [--port 8060] [--runs-dir logs/runs], puis ouvrir http://localhost:8060
 """
 
 import argparse
@@ -29,33 +17,36 @@ from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import unquote
 
+# Dossier servi au navigateur (index.html, app.js, style.css) : celui de ce fichier.
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
+# Écrits par scripts/12_aif_isaac_sim.py (dossier de sortie par défaut : /tmp) : état courant et
+# historique AIF (aif_core/loggers.py), état du décodage QR et images des caméras (qr_code_system.py).
 STATE_PATH = "/tmp/aif_state.json"
 HISTORY_PATH = "/tmp/aif_history.json"
 QR_STATE_PATH = "/tmp/qr_state.json"
 CAMERA_FRAMES_DIR = "/tmp/camera_frames"
 
-# ── NS-3 sources possibles ──
+# ── Latences NS-3 (simulateur de réseau), essayées dans cet ordre : WiFi, 5G, 5G brut ──
 NS3_WIFI_CSV = "/tmp/ns3_output.csv"
 NS3_LTE_CSV  = "/tmp/drone_latency_ns3.csv"
 NS3_5G_METRICS = "/tmp/drone_5g_metrics.csv"
 
-# ── Dossier des runs ── (override via --runs-dir ou env AIF_RUNS_DIR)
-_WORKSPACE_ROOT = os.path.dirname(DASHBOARD_DIR)  # parent of dashboard_aif/
+# ── Dossier des vols enregistrés : <racine>/logs/runs, sauf variable AIF_RUNS_DIR ou option --runs-dir ──
+_WORKSPACE_ROOT = os.path.dirname(DASHBOARD_DIR)  # racine du projet (parent de dashboard_aif/)
 DEFAULT_RUNS_DIR = os.environ.get(
     "AIF_RUNS_DIR",
     os.path.join(_WORKSPACE_ROOT, "logs", "runs"),
 )
-RUNS_DIR = DEFAULT_RUNS_DIR  # peut être surchargé via CLI
+RUNS_DIR = DEFAULT_RUNS_DIR  # remplacé par la valeur de --runs-dir dans main()
 
-# Whitelist images servies par /api/run/<tag>/img/<name>
+# Noms acceptés dans /api/run/<tag>/img/<nom> (lettres, chiffres, « _ . - ») : interdit de sortir de logs/runs
 SAFE_IMG_RE = re.compile(r"^[a-zA-Z0-9_.\-]+\.(png|jpg|jpeg|svg)$")
 SAFE_TAG_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 
 def _read_ns3_csv(path: str):
-    """Lit un CSV NS-3 (formats wifi / 5g) → liste de dicts {a, b, latency_ms, jitter_ms, rx_packets}.
-    Tolère les fichiers en cours d'écriture (lignes malformées ignorées)."""
+    """Renvoie la dernière mesure de chaque paire d'un CSV NS-3 (WiFi ou 5G) : {a, b, latency_ms, jitter_ms, rx_packets}.
+    Les lignes mal formées (fichier en cours d'écriture) sont ignorées ; liste vide si le fichier manque."""
     if not os.path.isfile(path):
         return []
     out = []
@@ -89,7 +80,8 @@ def _read_ns3_csv(path: str):
 
 
 def _ns3_state() -> dict:
-    """Construit la réponse /api/ns3 : pairs (latencies) + état réseau."""
+    """Construit la réponse de /api/ns3 : latences par paire (CSV NS-3, sinon aif_state.json) et état du réseau simulé.
+    L'état (lien cloud, file d'attente, messages envoyés / livrés / perdus, liens coupés) vient de aif_state.json."""
     pairs = []
     # essai wifi puis 5g
     if os.path.exists(NS3_WIFI_CSV):
@@ -120,7 +112,7 @@ def _ns3_state() -> dict:
         delivered  = int(net.get("msg_delivered", 0))
         cut_pairs  = list(net.get("cut_pairs", []))
         all_cut    = bool(net.get("all_drone_links_cut", False))
-        # si aif_state.json contient déjà les pairs, on les utilise (plus à jour)
+        # si aif_state.json contient déjà les paires, on les utilise (plus à jour)
         if not pairs and isinstance(net.get("ns3_pairs"), list):
             pairs = net["ns3_pairs"]
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
@@ -140,7 +132,7 @@ def _ns3_state() -> dict:
 
 
 def _runs_list() -> dict:
-    """Liste les sous-dossiers run_* dans RUNS_DIR avec leur config.json."""
+    """Renvoie les vols enregistrés (dossiers run_* de RUNS_DIR, du plus récent au plus ancien) avec config.json et images."""
     runs = []
     if os.path.isdir(RUNS_DIR):
         for name in sorted(os.listdir(RUNS_DIR), reverse=True):
@@ -177,13 +169,15 @@ def _runs_list() -> dict:
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
-    """Serves static files from dashboard_aif/ and JSON API endpoints."""
+    """Gestionnaire HTTP : sert les fichiers de dashboard_aif/ et les routes JSON /api/... lues par la page."""
 
     def __init__(self, *args, **kwargs):
+        """Prépare le serveur de fichiers en le limitant au dossier dashboard_aif/."""
         super().__init__(*args, directory=DASHBOARD_DIR, **kwargs)
 
     def do_GET(self):
-        # routes JSON
+        """Aiguille une requête GET vers la bonne route /api/..., ou sert un fichier statique (page, JS, CSS)."""
+        # routes de l'API
         if self.path == "/api/state":
             self._serve_json_file(STATE_PATH)
         elif self.path == "/api/history":
@@ -201,8 +195,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
-    # ── JSON helpers ──
+    # ── Envoi des réponses ──
     def _serve_json_obj(self, obj):
+        """Envoie l'objet Python `obj` en JSON compact (code 200, sans cache)."""
         data = json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -213,6 +208,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def _serve_json_file(self, filepath: str):
+        """Envoie tel quel un fichier JSON de /tmp ; répond 404 « data not available yet » s'il n'existe pas encore."""
         try:
             with open(filepath, "r") as f:
                 data = f.read()
@@ -229,11 +225,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(b'{"error":"data not available yet"}')
 
     def _serve_frame(self, path: str):
-        """Serve camera frame images.
-        Routes:
-            /api/frame/latest_drone_0.jpg        — latest raw frame
-            /api/frame/annotated_drone_0.jpg     — annotated frame with QR bbox
-        """
+        """Envoie une image caméra de /tmp/camera_frames : latest_drone_<id>.jpg (brute) ou annotated_drone_<id>.jpg (QR encadré).
+        Refuse (400) un nom contenant « / » ou « .. » ; répond 404 si l'image n'existe pas encore."""
         filename = path.split("/api/frame/")[-1]
         if "?" in filename:
             filename = filename.split("?")[0]
@@ -267,8 +260,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
     def _serve_run_img(self, path: str):
-        """Route: /api/run/<tag>/img/<name>  — sert un PNG d'un run."""
-        # On strippe d'éventuels query strings (cache-busting éventuel)
+        """Envoie une image d'un vol enregistré (/api/run/<tag>/img/<nom>) après avoir vérifié que le chemin reste dans RUNS_DIR."""
+        # On retire un éventuel « ?… » ajouté à l'URL (souvent pour contourner le cache du navigateur)
         clean = path.split("?", 1)[0]
         m = re.match(r"^/api/run/([^/]+)/img/(.+)$", clean)
         if not m:
@@ -282,7 +275,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         filepath = os.path.join(RUNS_DIR, tag, name)
-        # Sanity check : le path résolu doit rester dans RUNS_DIR
+        # Sécurité : le chemin réel (liens symboliques résolus) doit rester dans RUNS_DIR
         try:
             real = os.path.realpath(filepath)
             real_root = os.path.realpath(RUNS_DIR)
@@ -315,12 +308,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        # suppress per-request log noise; only log errors
+        """Allège le terminal : n'affiche pas les requêtes réussies (code 200), seulement les autres."""
         if args and "200" not in str(args[0]):
             super().log_message(format, *args)
 
 
 def main():
+    """Lit les options (--port, défaut 8060 ; --runs-dir, défaut <racine>/logs/runs) et sert jusqu'à Ctrl+C."""
     global RUNS_DIR
     parser = argparse.ArgumentParser(description="AIF Dashboard Server")
     parser.add_argument("--port", type=int, default=8060)

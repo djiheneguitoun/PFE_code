@@ -1,8 +1,15 @@
 #!/bin/bash
+# Installation, étape 5/5 : ajoute à ns-3.40 le module NS3-Sionna (calcul de la propagation radio
+# par lancer de rayons avec Sionna) : clone dans contrib/sionna, recompile ns-3, crée le venv Python
+# du serveur Sionna et ajoute NS3_DIR et NS3_SIONNA_DIR à ~/.bashrc. À lancer après l'étape 4 :
+#   bash scripts/installation/05_install_ns3sionna.sh
+# Arrête le script à la première commande en échec
 set -e
 
+# Version et dossier de ns-3 installés par 04_install_ns3.sh
 NS3_VERSION="3.40"
 NS3_SRC="$HOME/ns-allinone-${NS3_VERSION}/ns-${NS3_VERSION}"
+# Dossier du module NS3-Sionna dans ns-3
 SIONNA_DIR="$NS3_SRC/contrib/sionna"
 
 echo "=============================================="
@@ -78,6 +85,7 @@ deactivate
 echo ""
 echo "[4/4] Configuration des variables d'environnement..."
 
+# La ligne MARKER sert de repère pour ne pas ajouter deux fois le bloc à ~/.bashrc
 MARKER="# NS3-Sionna Paths"
 if ! grep -q "$MARKER" ~/.bashrc; then
     cat >> ~/.bashrc << EOF
@@ -91,6 +99,7 @@ else
     echo "Chemins déjà configurés."
 fi
 
+# Rappel des commandes de lancement (le scénario doit d'abord être copié dans scratch/ et compilé)
 echo ""
 echo " NS3-Sionna installé avec succès !"
 echo ""

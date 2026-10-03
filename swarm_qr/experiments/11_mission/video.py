@@ -1,12 +1,8 @@
-"""Assemble les vidéos d'une mission enregistrée avec `mission.py --video` : une par caméra
-fixe, et une composée — les caméras de couloir en mosaïque, la vue d'ensemble et la caméra de
-lecture en médaillons, le temps et le compteur de codes en surimpression. À vitesse réelle : le
-simulateur rend cinq images par seconde de vol, et la vidéo les tient un cinquième de seconde.
+"""Assemble les vidéos d'une mission lancée avec `mission.py --video` : une par caméra fixe, plus mission.mp4 (mosaïque).
 
-L'encodage passe par ffmpeg en H.264, vingt-cinq fois plus léger que le MPEG-4 d'OpenCV et
-lisible partout ; si ffmpeg manque, OpenCV prend le relais.
-
-    video.py --dossier experiments/11_mission/eval_nominal
+Vitesse réelle : 5 images par seconde de vol, chacune tenue 0,2 s. Encodage H.264 par ffmpeg (25 fois plus léger
+que le MPEG-4 d'OpenCV, utilisé seulement si ffmpeg manque). Lit et écrit dans <dossier>/video/ :
+    video.py --dossier "experiments/11_mission/tests of system/eval_nominal" [--sans-images]   (depuis swarm_qr/)
 """
 from __future__ import annotations
 
@@ -19,19 +15,20 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-IPS = 25
+IPS = 25                     # images par seconde des vidéos produites
 CRF = 24                     # qualité H.264 : 18 quasi sans perte, 28 visiblement compressé
-MOSAIQUE = ["sud_ouest", "sud_central", "nord_central", "sud_grande"]
+MOSAIQUE = ["sud_ouest", "sud_central", "nord_central", "sud_grande"]   # caméras de couloir, dans l'ordre des cases
+# légende écrite sur chaque caméra (texte sans accents : la police d'OpenCV ne les dessine pas)
 TITRES = {"sud_ouest": "couloir ouest, depuis le sud", "sud_central": "couloir central, depuis le sud",
           "nord_central": "couloir central, depuis le nord", "sud_grande": "grande zone, depuis le sud",
           "ensemble": "vue d'ensemble", "lecteur": "camera de lecture"}
 
 
 class Sortie:
-    """Une vidéo en écriture. Les images arrivent au rythme du simulateur ; l'encodeur les
-    répète pour atteindre 25 images par seconde, sans les recomposer."""
+    """Une vidéo en cours d'écriture : les images, au rythme du simulateur, sont répétées jusqu'à 25 images par seconde."""
 
     def __init__(self, chemin: Path, taille: tuple[int, int], ips_entree: float):
+        """Ouvre l'encodeur : ffmpeg (H.264) s'il est installé, sinon OpenCV (MPEG-4) avec images répétées."""
         self.chemin, self.taille = chemin, taille
         self.ffmpeg = shutil.which("ffmpeg")
         if self.ffmpeg:
@@ -47,6 +44,7 @@ class Sortie:
             self.writer = cv2.VideoWriter(str(chemin), cv2.VideoWriter_fourcc(*"mp4v"), IPS, taille)
 
     def ecrit(self, img: np.ndarray) -> None:
+        """Ajoute une image (BGR) à la vidéo."""
         if self.ffmpeg:
             self.proc.stdin.write(np.ascontiguousarray(img).tobytes())
         else:
@@ -54,6 +52,7 @@ class Sortie:
                 self.writer.write(img)
 
     def ferme(self) -> float:
+        """Termine la vidéo ; renvoie la taille du fichier en Mo (0 s'il n'existe pas)."""
         if self.ffmpeg:
             self.proc.stdin.close()
             self.proc.wait()
@@ -63,6 +62,7 @@ class Sortie:
 
 
 def _lit(dossier: Path, cam: str, n: int, taille):
+    """Lit l'image n d'une caméra à la taille voulue ; renvoie une image noire si elle manque."""
     p = dossier / cam / f"{n:05d}.jpg"
     img = cv2.imread(str(p)) if p.exists() else None
     if img is None:
@@ -73,12 +73,14 @@ def _lit(dossier: Path, cam: str, n: int, taille):
 
 
 def _etiquette(img, texte, y=24):
+    """Écrit `texte` en blanc bordé de noir en haut à gauche de l'image ; renvoie l'image."""
     cv2.putText(img, texte, (9, y + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(img, texte, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
     return img
 
 
 def par_camera(dossier: Path, index: dict, ips_entree: float) -> None:
+    """Écrit une vidéo <caméra>.mp4 par sous-dossier d'images, avec temps et compteur de codes en surimpression."""
     for cam in sorted(p.name for p in dossier.iterdir() if p.is_dir()):
         premiere = next(iter(sorted((dossier / cam).glob("*.jpg"))), None)
         if premiere is None:
@@ -93,8 +95,8 @@ def par_camera(dossier: Path, index: dict, ips_entree: float) -> None:
 
 
 def panneau_info(taille, index: dict, im: dict, entete: dict) -> np.ndarray:
-    """La case libre de la mosaïque dit de quelle mission il s'agit : sans elle, une vidéo
-    sortie de son dossier ne veut plus rien dire."""
+    """Dessine la case d'identité de la mosaïque (mission, entrepôt, cas, temps, codes, drones en vol) ; renvoie l'image.
+    Sans elle, une vidéo sortie de son dossier ne dirait pas de quelle mission il s'agit."""
     img = np.full((taille[1], taille[0], 3), 24, np.uint8)
     lignes = [entete.get("titre", ""), entete.get("entrepot", ""), entete.get("cas", ""), "",
               f"temps de vol      {im['t']:.0f} s",
@@ -108,9 +110,8 @@ def panneau_info(taille, index: dict, im: dict, entete: dict) -> np.ndarray:
 
 
 def composee(dossier: Path, index: dict, ips_entree: float, entete: dict) -> None:
-    """Quatre cases : les caméras de couloir présentes, puis la vue d'ensemble, puis la caméra de
-    lecture ; ce qui dépasse quatre passe en médaillon, ce qui manque devient le panneau
-    d'identité. Le bandeau occupe sa propre bande, au-dessus, pour ne rien cacher."""
+    """Écrit mission.mp4 : 4 cases (caméras de couloir, vue d'ensemble, lecteur ; case vide = identité de la mission),
+    les caméras en trop en médaillons, et un bandeau (temps, codes, drones) dans sa propre bande en haut."""
     W, H, BANDE = 1280, 720, 30
     q = (W // 2, H // 2)
     med = (320, 180)
@@ -143,7 +144,7 @@ def composee(dossier: Path, index: dict, ips_entree: float, entete: dict) -> Non
 
 
 def entete(dossier: Path) -> dict:
-    """L'identité de la mission, lue dans son journal."""
+    """Lit dans mission.json l'identité de la mission (entrepôt ; cas : nominal, panne ou obstacle) ; renvoie un dict."""
     fichier = dossier / "mission.json"
     if not fichier.exists():
         return {}
@@ -157,6 +158,7 @@ def entete(dossier: Path) -> dict:
 
 
 def main() -> None:
+    """Lit video/index.json, écrit les vidéos par caméra puis mission.mp4 ; avec --sans-images, efface ensuite les images."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--dossier", required=True, help="le dossier de sortie de la mission")
     ap.add_argument("--sans-images", action="store_true", dest="sans_images",

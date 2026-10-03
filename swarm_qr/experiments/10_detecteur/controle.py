@@ -1,11 +1,8 @@
-"""Contrôle des cadres avant tout entraînement.
+"""Contrôle des cadres de l'étape 7 avant l'entraînement, sans simulateur (un cadre décalé fausse l'entraînement en silence).
 
-  controle.py --planche jeu/rendu_3 jeu/etape2_optique     dessine les cadres sur des images tirées des jeux
-  controle.py --verifie                                    confronte les cadres « qr » de l'étape 2 à la
-                                                           projection validée là-bas
-
-Un cadre décalé n'arrête pas l'entraînement : il le fausse en silence. On regarde donc, et on
-compare à une mesure indépendante.
+  controle.py --planche jeu/rendu_3 jeu/etape2_optique   dessine les cadres sur quelques images → controle/planche_NN.jpg
+  controle.py --verifie                                   compare les cadres « qr » à la projection validée à l'étape 2
+                                                          → controle/verification_cadres.json
 """
 
 from __future__ import annotations
@@ -20,20 +17,22 @@ import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[2]          # racine du projet
 sys.path.insert(0, str(ROOT))
 
 from swarm_qr.experiments import _img  # noqa: E402
 
-ETAPE2 = HERE.parent / "07_enveloppe"
-COULEURS = {"qr": (0, 220, 0), "carton": (255, 160, 0)}
+ETAPE2 = HERE.parent / "07_enveloppe"   # images, poses et analyse de l'étape 2
+COULEURS = {"qr": (0, 220, 0), "carton": (255, 160, 0)}   # couleurs BGR (OpenCV) : vert = qr, bleu clair = carton
 
 
 def charge_jeu(dossier: Path) -> list[dict]:
+    """Lit le manifeste d'un jeu ; renvoie une ligne (dict) par image."""
     return [json.loads(l) for l in (dossier / "manifeste.jsonl").read_text().splitlines() if l.strip()]
 
 
 def dessine(dossier: Path, m: dict) -> np.ndarray:
+    """Dessine les cadres d'une image (gris = objet ignoré, distance écrite au-dessus des QR) ; renvoie l'image légendée."""
     img = cv2.imread(str(dossier / "images" / m["image"]))
     for o in m["objets"]:
         x0, y0, x1, y1 = [int(round(v)) for v in o["bbox"]]
@@ -51,6 +50,7 @@ def dessine(dossier: Path, m: dict) -> np.ndarray:
 
 
 def planche(dossiers: list[Path], par_jeu: int, sortie: Path) -> None:
+    """Prend `par_jeu` images réparties dans chaque jeu et les assemble par 6 dans sortie/planche_NN.jpg."""
     images = []
     for d in dossiers:
         ms = charge_jeu(d)
@@ -63,10 +63,9 @@ def planche(dossiers: list[Path], par_jeu: int, sortie: Path) -> None:
 
 
 def verifie(jeux: list[str]) -> dict:
-    """Pour chaque image de l'étape 2, le panneau visé a une projection validée à quelques
-    pixels près. Notre cadre « qr » du même code doit contenir ce centre, avec un côté du
-    même ordre. Là où le panneau est dans l'image mais sans cadre, on vérifie que c'est
-    parce qu'il est caché, pas parce que l'annotation l'a raté."""
+    """Vérifie que le centre du panneau visé, projeté par la fonction validée à l'étape 2, tombe dans notre cadre « qr ».
+    Compte aussi l'écart de côté et les panneaux sans cadre (cachés ou inexpliqués) ; renvoie le bilan par jeu."""
+    # 07_enveloppe/analyse.py lit ses propres arguments au chargement : on les vide avant de l'importer
     sys.argv = [sys.argv[0]]
     spec = importlib.util.spec_from_file_location("analyse_etape2", ETAPE2 / "analyse.py")
     mod = importlib.util.module_from_spec(spec)
@@ -89,6 +88,7 @@ def verifie(jeux: list[str]) -> dict:
             n += 1
             cadres = [o for o in m["objets"] if o["classe"] == "qr" and o.get("code") == m["cible"]]
             vis = [o for o in cadres if not o["ignore"]]
+            # pas de cadre gardé : caché par la physique (moins de 30 % visible) ou absence inexpliquée
             if not vis:
                 if cadres and cadres[0]["visible"] < 0.3:
                     caches += 1
@@ -96,6 +96,7 @@ def verifie(jeux: list[str]) -> dict:
                     sans_cadre += 1
                 continue
             x0, y0, x1, y1 = vis[0]["bbox"]
+            # centre projeté dans le cadre, à 2 pixels près
             if x0 - 2 <= u <= x1 + 2 and y0 - 2 <= v <= y1 + 2:
                 dedans += 1
             ecarts_cote.append(abs((x1 - x0) / max(cote_px, 1e-6) - 1.0))

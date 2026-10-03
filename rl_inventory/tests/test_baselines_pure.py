@@ -1,5 +1,6 @@
-"""Tests SANS Isaac de la logique pure des baselines (Pore + Active Inference).
+"""Tests sans Isaac des méthodes de référence : planificateur de Pore et al. et contrôleur par inférence active (AIF).
 
+Modules testés : swarmscan_map/baselines/pore_planner.py et aif_controller.py. Lancement depuis la racine :
   ~/isaac5_env/bin/python rl_inventory/tests/test_baselines_pure.py
 """
 
@@ -9,6 +10,7 @@ import sys
 
 import torch
 
+# rend le paquet rl_inventory importable (racine du projet = deux dossiers au-dessus)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from rl_inventory.swarmscan_map.baselines.pore_planner import allocate_sectors, greedy_tour, waypoint_velocity
@@ -19,6 +21,7 @@ from rl_inventory.swarmscan_map.baselines.aif_controller import (
 
 
 def test_sectors_disjoints_et_complets():
+    """Vérifie que 60 points tirés au hasard sont répartis en 3 secteurs non vides, chacun allant au centre de secteur le plus proche."""
     pts = torch.rand(60, 3) * torch.tensor([30.0, 20.0, 3.0]) - torch.tensor([15.0, 10.0, 0.0])
     lab = allocate_sectors(pts, 3)
     assert lab.shape == (60,) and set(lab.tolist()) <= {0, 1, 2}, "étiquettes invalides"
@@ -31,6 +34,7 @@ def test_sectors_disjoints_et_complets():
 
 
 def test_tournee_gloutonne():
+    """Vérifie que la tournée gloutonne visite chaque point une fois, en allant toujours au plus proche (ordre attendu 1, 2, 0, 3)."""
     pts = torch.tensor([[5.0, 0, 1], [1.0, 0, 1], [3.0, 0, 1], [9.0, 0, 1]])
     order = greedy_tour(pts, start=torch.tensor([0.0, 0.0, 1.0]))
     assert order.tolist() == [1, 2, 0, 3], f"ordre glouton faux : {order.tolist()}"
@@ -39,6 +43,8 @@ def test_tournee_gloutonne():
 
 
 def test_loi_de_commande_converge_et_scan():
+    """Vérifie la loi de commande vers un point : fonce vers lui, ralentit sous 0,6 m/s près du point de scan, tourne vers le cap voulu,
+    freine face à un mur."""
     pos = torch.tensor([[0.0, 0.0, 1.0]])
     yaw = torch.zeros(1)
     target = torch.tensor([[4.0, 0.0, 1.5]])
@@ -59,6 +65,7 @@ def test_loi_de_commande_converge_et_scan():
 
 
 def _grid(B=1, H=40, W=40, cell=0.25):
+    """Renvoie les coordonnées x et y (m) des centres d'une grille H×W de cases de 0,25 m centrée sur l'origine."""
     xs = (torch.arange(W) + 0.5) * cell - W * cell / 2
     ys = (torch.arange(H) + 0.5) * cell - H * cell / 2
     cx = xs.view(1, 1, W).expand(1, H, W)
@@ -67,6 +74,7 @@ def _grid(B=1, H=40, W=40, cell=0.25):
 
 
 def test_aif_prefere_le_travail():
+    """Vérifie que l'AIF choisit la direction du travail restant (zone à l'est) : énergie libre attendue G minimale vers l'est."""
     cx, cy = _grid()
     work = torch.zeros(1, 40, 40)
     work[0, :, 32:] = 1.0                          # travail à l'EST (x > +3 m)
@@ -86,6 +94,7 @@ def test_aif_prefere_le_travail():
 
 
 def test_aif_evite_les_murs():
+    """Vérifie que l'AIF ne fonce pas dans un mur placé à ~0,3 m devant, même si le travail restant est derrière ce mur."""
     cx, cy = _grid()
     work = torch.zeros(1, 40, 40)
     work[0, :, 32:] = 1.0                          # travail à l'est…
@@ -104,6 +113,7 @@ def test_aif_evite_les_murs():
 
 
 def test_aif_hover_quand_tout_est_fait():
+    """Vérifie que l'AIF reste sur place (vol stationnaire, coût nul) quand il ne reste plus rien à scanner."""
     cx, cy = _grid()
     work = torch.zeros(1, 40, 40)                  # plus aucun travail
     pos = torch.zeros(1, 3)

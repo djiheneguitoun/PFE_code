@@ -1,11 +1,10 @@
-"""Test 1 — La même graine donne-t-elle exactement le même entrepôt ?
+"""Test 1 (étape 1) : la même graine redonne-t-elle exactement le même entrepôt ?
 
-On construit deux fois l'entrepôt de la graine 7, dans deux processus séparés, et on compare
-les vues de dessus pixel par pixel.
-
-  python run.py --seed 7 --pass A
-  python run.py --seed 7 --pass B
-  python run.py --compare
+Construit l'entrepôt de la graine 7 dans deux processus séparés (passages A et B), enregistre à
+chaque fois la vue de dessus et la description de l'entrepôt (JSON), puis compare les deux.
+Lancé par run_all.sh ; à la main, depuis la racine du projet :
+  $PY swarm_qr/experiments/01_reproductibilite/run.py --seed 7 --pass A    (puis --pass B)
+  $PY swarm_qr/experiments/01_reproductibilite/run.py --compare            (sans Isaac Sim)
 """
 
 from __future__ import annotations
@@ -15,10 +14,11 @@ import json
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+HERE = Path(__file__).resolve().parent  # dossier du test : toutes les sorties y sont écrites
+ROOT = HERE.parents[2]                  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
 
+# --pass choisit le suffixe des fichiers écrits (vue_A.jpg / vue_B.jpg, layout_A / layout_B).
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=7)
 parser.add_argument("--pass", dest="run_pass", choices=["A", "B"], default="A")
@@ -26,6 +26,8 @@ parser.add_argument("--compare", action="store_true")
 
 
 def compare() -> int:
+    """Compare les passages A et B (description JSON, puis images) et écrit comparaison.jpg et
+    resultat.json ; renvoie 0 si reproductible, 2 sinon, 1 s'il manque une vue."""
     import cv2
     import numpy as np
 
@@ -37,6 +39,7 @@ def compare() -> int:
 
     diff = cv2.absdiff(a, b).max(axis=2)
     mean_diff = float(diff.mean())
+    # Écart « structurel » : part des pixels qui changent de plus de 40/255 (un objet a bougé).
     structural = float((diff > 40).mean())
     layout_a = json.loads((HERE / "layout_A.json").read_text())
     layout_b = json.loads((HERE / "layout_B.json").read_text())
@@ -73,6 +76,7 @@ def compare() -> int:
     return 0 if ok else 2
 
 
+# --compare ne lit que les fichiers déjà écrits : on le traite avant de démarrer Isaac Sim.
 args_pre, _ = parser.parse_known_args()
 if args_pre.compare:
     raise SystemExit(compare())
@@ -85,6 +89,7 @@ _sys.stdout.reconfigure(line_buffering=True)
 
 from isaacsim import SimulationApp  # noqa: E402
 
+# Isaac Sim doit démarrer avant tout import de omni.* et de swarm_qr.env.
 simulation_app = SimulationApp(
     {"headless": True, "extra_args": ["--/rtx/verifyDriverVersion/enabled=false"]}
 )
@@ -100,6 +105,8 @@ from swarm_qr.experiments import _viz  # noqa: E402
 
 
 def main() -> None:
+    """Construit l'entrepôt de la graine (drones posés, sans SITL) et, après 40 pas de simulation,
+    enregistre la vue de dessus vue_<passage>.jpg et la description layout_<passage>.json."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=False)
     overview = _viz.overview_camera()

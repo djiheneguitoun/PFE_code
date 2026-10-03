@@ -1,4 +1,8 @@
-"""Capture quelques images RGB de l'entrepôt (pour visualiser cartons vs bacs KLT)."""
+"""Rend 3 images RGB 1280×720 de l'entrepôt (vue d'ensemble, gros plan sur des cartons, allée) pour distinguer cartons et bacs KLT.
+
+Les images (view_*.png) vont dans le dossier OUT (sur la machine de simulation).
+Lancement (avec fenêtre, devant l'écran de la machine) : bash rl_inventory/launch.sh rl_inventory/diag/render_view.py
+"""
 
 import argparse
 
@@ -15,17 +19,20 @@ import numpy as np
 import omni.replicator.core as rep
 import omni.usd
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"
     "Assets/Isaac/4.2/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd",
 )
+# dossier de sortie des images (dossier personnel de la machine de simulation)
 OUT = "/home/djihene_guitoun/simulation_mc02/rl_inventory"
 
 omni.usd.get_context().open_stage(USD)
 for _ in range(30):
     simulation_app.update()
 
+# (position de la caméra, point visé, nom) — coordonnées en m dans le repère de l'entrepôt
 views = [
     ((-10.0, -10.0, 7.0), (2.0, 6.0, 1.5), "overview"),
     ((3.0, 11.0, 2.2), (9.0, 11.0, 1.4), "cardbox_closeup"),

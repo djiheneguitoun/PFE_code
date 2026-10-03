@@ -1,7 +1,9 @@
-"""Débogage caméras natives : pourquoi la vue de dessus est-elle blanche ?
+"""Débogage des caméras d'Isaac Sim : pourquoi la vue de dessus sortait-elle blanche ?
 
-Capture la vue de dessus à 40 puis 240 pas, relit la pose réelle de la caméra, et capture la
-caméra latérale du drone 0. Écrit tout dans debug_cams/.
+Sur la scène de la graine 7 (sans SITL), capture la vue de dessus à 40 puis 240 pas, affiche la
+pose réelle de cette caméra, et capture les caméras gauche et frontale du drone 0. Images dans
+debug_cams/. Depuis la racine du projet :
+  $PY swarm_qr/experiments/05_sitl/debug_cams.py
 """
 
 from __future__ import annotations
@@ -10,9 +12,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[2]                  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
-OUT = HERE / "debug_cams"
+OUT = HERE / "debug_cams"               # dossier des images de débogage
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -34,6 +36,8 @@ from swarm_qr.experiments import _img, _viz  # noqa: E402
 
 
 def dump(cam, name):
+    """Affiche la taille et les valeurs min/max/moyenne de l'image d'une caméra, puis l'enregistre
+    dans debug_cams/<name>.jpg si elle n'est pas vide."""
     rgb = cam.get_rgb()
     arr = np.asarray(rgb)
     print(f"[DBG] {name}: shape={arr.shape} dtype={arr.dtype} "
@@ -44,6 +48,8 @@ def dump(cam, name):
 
 
 def main() -> None:
+    """Construit la scène (graine 7, drones posés) et capture la vue de dessus et les caméras du
+    drone 0 après 40 puis 240 pas avec rendu."""
     OUT.mkdir(exist_ok=True)
     layout = make_layout(7)
     scene = scene_mod.build(layout, with_sitl=False)

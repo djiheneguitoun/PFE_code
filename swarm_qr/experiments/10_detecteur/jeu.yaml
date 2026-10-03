@@ -1,3 +1,7 @@
+# Description du jeu de l'étape 7 pour ultralytics (YOLO), réécrite par entraine.py à chaque entraînement.
+# path : dossier jeu/ en chemin absolu, celui de la machine de simulation.
+# train : les 6 entrepôts d'apprentissage ; val : les 2 entrepôts scellés, jamais vus à l'apprentissage.
+# names : 0 = qr (le code seul, sans marge blanche), 1 = carton.
 path: /home/djihene_guitoun/simulation_mc02/swarm_qr/experiments/10_detecteur/jeu
 train:
   - rendu_0/images

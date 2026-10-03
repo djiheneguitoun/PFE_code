@@ -1,7 +1,7 @@
-"""T1.5a — pose les QR sur les cartons.
+"""Test T1.5a : colle les QR sur les cartons de l'entrepôt, puis rend une image ou ouvre la fenêtre pour les voir.
 
-- avec --headless : rend une image (view_qr_closeup.png).
-- sans --headless : ouvre la fenêtre Isaac Sim pour naviguer (ferme la fenêtre pour quitter).
+Avec --headless : enregistre view_qr_closeup.png dans le dossier OUT. Sans : fenêtre Isaac Sim (la fermer pour quitter).
+Lancement depuis la racine (avec fenêtre, devant l'écran) : bash rl_inventory/launch.sh rl_inventory/tests/test_qr_placement.py
 """
 
 import argparse
@@ -25,15 +25,18 @@ from PIL import Image
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from rl_inventory.qr_task import attach_qr_to_cartons  # noqa: E402
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"
     "Assets/Isaac/4.2/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd",
 )
+# dossier de sortie de l'image (dossier personnel de la machine de simulation)
 OUT = "/home/djihene_guitoun/simulation_mc02/rl_inventory"
 
 
 def pump(n):
+    """Fait avancer l'application Isaac de n images (laisse le temps au chargement et au rendu)."""
     for _ in range(n):
         simulation_app.update()
 
@@ -41,6 +44,7 @@ def pump(n):
 try:
     omni.usd.get_context().new_stage()
     stage = omni.usd.get_context().get_stage()
+    # entrepôt chargé en référence dans une scène neuve : sinon ses textures ne sont pas trouvées
     add_reference_to_stage(USD, "/World/Warehouse")
     pump(150)
 

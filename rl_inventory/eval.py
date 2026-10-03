@@ -1,15 +1,9 @@
-"""Évaluation de l'essaim entraîné (déterministe) → métriques pour le rapport vs Pore.
+"""Évalue un essaim entraîné (politique déterministe = action moyenne) et affiche les métriques pour la comparaison avec Pore.
 
-Charge un checkpoint skrl, joue la politique en DÉTERMINISTE (action moyenne), et mesure
-sur N épisodes parallèles : couverture, temps de mission, taux de succès, collisions,
-distance mini inter-drones, sécurité (facteur de risque), efficacité d'exploration, effort.
-
-Métriques différées (à ajouter ensuite) : vrai pyzbar (nécessite le rendu caméra),
-latence NS3, erreur de trajectoire RMS (nécessite un chemin de référence).
-
-Exemple :
-  ~/isaac5_env/bin/python rl_inventory/eval.py --checkpoint .../best_agent.pt \
-     --headless --num_envs 16 --kit_args="--/rtx/verifyDriverVersion/enabled=false"
+Sur N épisodes parallèles : couverture QR, temps de mission, succès, collisions, distance entre drones, sécurité, efficacité, effort.
+Métriques différées (à ajouter ensuite) : vrai décodage pyzbar (rendu caméra), latence réseau NS3, erreur de trajectoire RMS.
+Lancement depuis la racine (checkpoint skrl écrit par train_ppo.py) :
+  ~/isaac5_env/bin/python rl_inventory/eval.py --checkpoint .../best_agent.pt --headless --num_envs 16 --kit_args="--/rtx/verifyDriverVersion/enabled=false"
 """
 
 import argparse
@@ -37,6 +31,7 @@ from skrl.utils.runner.torch import Runner
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils import load_cfg_from_registry
 
+# rend le paquet rl_inventory importable (racine du projet = dossier parent de ce fichier)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import rl_inventory  # noqa: F401  enregistre la tâche gym
 from rl_inventory.config_rl import CFG  # noqa: E402
@@ -44,11 +39,12 @@ from rl_inventory.env import AGENTS, NUM_DRONES, SwarmQREnvCfg  # noqa: E402
 
 
 def stat(x):
-    """Renvoie (moyenne, écart-type) d'un tenseur 1D en floats."""
+    """Renvoie (moyenne, écart-type) d'un tenseur 1D, en nombres Python."""
     return x.float().mean().item(), x.float().std(unbiased=False).item()
 
 
 def main():
+    """Charge le checkpoint, joue un épisode par environnement en mode déterministe, puis affiche les métriques (et un CSV si --out)."""
     entry = {"IPPO": "skrl_ippo_cfg_entry_point", "MAPPO": "skrl_mappo_cfg_entry_point"}[args.algorithm]
     agent_cfg = load_cfg_from_registry(args.task, entry)
 
@@ -66,8 +62,8 @@ def main():
     dev = base.device
     horizon = args.max_steps or int(base.max_episode_length)
     target = CFG.qr.coverage_target
-    r_safe = CFG.reward.safe_distance_m
-    beta = 10.0
+    r_safe = CFG.reward.safe_distance_m  # m : 0,5
+    beta = 10.0  # pente (1/m) du facteur de risque sigmoïde
 
     # tampons par env (un épisode par env, figé dès qu'il se termine)
     done_mask = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -92,6 +88,7 @@ def main():
             for j in range(i + 1, NUM_DRONES):
                 inter = torch.minimum(inter, torch.norm(pos[i] - pos[j], dim=-1))
 
+        # facteur de risque : 0,5 quand l'obstacle le plus proche (tous drones) est à 0,5 m, proche de 1 en dessous
         risk = torch.sigmoid(beta * (r_safe - base._lidar_min.min(dim=0).values))  # (N,)
 
         max_cov = torch.where(upd, torch.maximum(max_cov, cov), max_cov)
@@ -113,6 +110,7 @@ def main():
         obs, _, term, trunc, _ = env.step(actions)
         eff = torch.stack([base._actions[a].abs().mean(dim=-1) for a in AGENTS], dim=0).mean(dim=0)
         effort = effort + torch.where(upd, eff, torch.zeros_like(eff))
+        # fin d'épisode : dict par drone (multi-agent) ou tenseur, selon ce que renvoie l'enveloppe skrl
         done = (term[AGENTS[0]] | trunc[AGENTS[0]]) if isinstance(term, dict) else (term | trunc).reshape(n, -1).any(dim=-1)
         done_mask = done_mask | done.reshape(-1).bool()
         if bool(done_mask.all()):
@@ -123,7 +121,7 @@ def main():
     completed = max_cov >= target
     success = completed & (~collided)
     qr_read = max_cov * base._n_cartons
-    expl_eff = qr_read / path_len.clamp_min(1e-6)
+    expl_eff = qr_read / path_len.clamp_min(1e-6)  # QR lus par mètre parcouru (somme des 3 drones)
     pct_safe = 100.0 * safe_steps / alive
     eff_mean = effort / alive
     ctrl_dt = CFG.train.control_dt

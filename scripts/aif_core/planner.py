@@ -1,3 +1,10 @@
+"""Choix du mouvement de chaque drone par inférence active (AIF), plus une méthode simple de comparaison.
+
+Le drone envisage 9 actions (rester, ou avancer de 1 m dans une des 8 directions) et note chacune par G,
+l'« énergie libre attendue » : G baisse si l'action promet d'apprendre beaucoup (curiosité) ou d'approcher
+des zones encore incertaines, et monte si elle rapproche d'un autre drone ou d'un obstacle.
+L'action est tirée au hasard en favorisant les G bas. Utilisé par architecture/*.py via get_planner.
+"""
 from __future__ import annotations
 
 import math
@@ -10,6 +17,7 @@ from .math_utils import bernoulli_entropy, softmax_sample
 
 
 def _build_actions() -> List[Tuple[str, float, float]]:
+    """Renvoie les 9 actions (nom, dx, dy) : rester, ou aller vers N, NE, E, SE, S, SW, W, NW (direction de longueur 1)."""
     raw = [
         ("stay", 0.0, 0.0),
         ("N", 0.0, -1.0), ("NE", 1.0, -1.0), ("E", 1.0, 0.0),
@@ -23,13 +31,16 @@ def _build_actions() -> List[Tuple[str, float, float]]:
     return out
 
 
-ACTIONS: List[Tuple[str, float, float]] = _build_actions()
+ACTIONS: List[Tuple[str, float, float]] = _build_actions()   # un déplacement = cfg.step_size (1 m) dans la direction (dx, dy)
 
 
 def expected_info_gain(wx: float, wy: float, belief: BeliefGrid, cfg) -> float:
+    """Estime ce qu'apprendrait un scan lidar fait depuis (wx, wy) : somme, sur 360 rayons simulés, de l'incertitude
+    des cases que chaque rayon a des chances d'atteindre (une case probablement occupée arrête le rayon)."""
     total = 0.0
     for angle in cfg.ray_angles:
         cos_a, sin_a = math.cos(angle), math.sin(angle)
+        # p_reach : probabilité que le rayon arrive jusqu'à la case sans avoir été arrêté avant
         p_reach = 1.0
         for step in range(1, cfg.max_range_cells + 1):
             cx = wx + step * cfg.grid_resolution * cos_a
@@ -46,6 +57,8 @@ def expected_info_gain(wx: float, wy: float, belief: BeliefGrid, cfg) -> float:
 
 
 def frontier_attraction(wx: float, wy: float, belief: BeliefGrid) -> float:
+    """Renvoie l'attrait des zones incertaines autour de (wx, wy) : moyenne sur 11 × 11 cases de l'incertitude
+    de chaque case (1 si p = 0,5 ; 0 si p = 0 ou 1), divisée par (distance + 1)."""
     gx, gy = belief.world_to_grid(wx, wy)
     window = 5
     total, count = 0.0, 0
@@ -60,11 +73,8 @@ def frontier_attraction(wx: float, wy: float, belief: BeliefGrid) -> float:
 
 
 def obstacle_clearance(wx: float, wy: float, belief: BeliefGrid, cfg) -> float:
-    """Pénalité de proximité aux cases occupées (répulsion d'obstacle).
-
-    Plus la case candidate est proche d'un obstacle (p >= occ_threshold) dans
-    un rayon de `clearance_cells`, plus la valeur est élevée. Sert à contourner
-    l'obstacle avec une marge, au lieu de le longer ou de l'éviter brutalement."""
+    """Renvoie une pénalité qui grandit près des cases occupées (rayon clearance_cells : 6 cases = 3 m) ;
+    elle fait contourner l'obstacle avec une marge au lieu de le longer ou de l'éviter brutalement."""
     gx, gy = belief.world_to_grid(wx, wy)
     R = int(cfg.clearance_cells)
     pen = 0.0
@@ -80,18 +90,15 @@ def obstacle_clearance(wx: float, wy: float, belief: BeliefGrid, cfg) -> float:
 
 
 def _planner_bounds(cfg) -> Tuple[float, float, float, float]:
-    """Bornes (x0, y0, x1, y1) navigables en repère local.
-
-    Restreint au volume intérieur de l'usine (inset compris) si connu, sinon
-    repli sur les bords de l'environnement. Empêche les drones de divaguer
-    dans la marge des murs ou entre les étagères."""
+    """Renvoie la zone permise (x0, y0, x1, y1) en m locaux : l'intérieur de l'usine (marge de 2,5 m) s'il est connu,
+    sinon toute la zone moins 0,5 m ; empêche les drones d'errer dans la marge des murs."""
     ib = cfg.interior_bounds_local()
     if ib is not None:
         return ib
     return (0.5, 0.5, cfg.env_width - 0.5, cfg.env_height - 0.5)
 
 
-# Sélection d'action — AIF (Free Energy Minimization)
+# Choix d'action AIF : minimiser l'énergie libre attendue G
 def select_action(pos_x: float, pos_y: float,
                   others: List[Tuple[float, float]],
                   belief: BeliefGrid,
@@ -100,10 +107,14 @@ def select_action(pos_x: float, pos_y: float,
                   rng: np.random.Generator,
                   resilience_phase: str = "normal"
                   ) -> Tuple[Tuple[str, float, float], List[Dict], int]:
+    """Choisit l'action AIF : calcule G pour chaque mouvement permis, puis en tire un (G bas = plus probable).
+    Renvoie (action, diagnostic des 9 candidats, indice choisi)."""
+    # Carte de planification : 70 % carte du drone + 30 % carte fusionnée (fusion_mix), en log-odds
     plan_belief = mix_beliefs(belief, fused, cfg.fusion_mix) if fused else belief
     H = plan_belief.mean_entropy()
     bx0, by0, bx1, by1 = _planner_bounds(cfg)
     n = len(ACTIONS)
+    # G = 1e6 : action interdite (hors zone ou case occupée), jamais tirée
     G = np.full(n, 1e6)
     valid = np.zeros(n, dtype=bool)
     cand_diag: List[Dict] = []
@@ -138,6 +149,8 @@ def select_action(pos_x: float, pos_y: float,
         )
         clr = obstacle_clearance(nx, ny, plan_belief, cfg)
 
+        # G (plus bas = mieux) = - curiosité (ig) - attrait des frontières (fr) + coûts (bouger, drones, obstacles).
+        # Les phases "recovery" et "durable" ajoutent des termes liés à l'entropie H (poids w_*_recover, w_*_durable).
         if resilience_phase == "recovery":
             G[i] = (
                 - cfg.w_entropy_recover * H
@@ -179,6 +192,7 @@ def select_action(pos_x: float, pos_y: float,
         })
         cand_diag.append(entry)
 
+    # Aucune action permise : on force "rester sur place"
     if not valid.any():
         valid[0] = True
         G[0] = 0.0
@@ -190,14 +204,15 @@ def select_action(pos_x: float, pos_y: float,
     return ACTIONS[idx], cand_diag, idx
 
 
-# Sélection d'action — Heuristique (frontier-based)
-HEUR_FREE_THR = 0.4
-HEUR_COLL_RADIUS = 1.5
+# Choix d'action heuristique (méthode simple « frontière », pour comparer avec l'AIF)
+HEUR_FREE_THR = 0.4      # probabilité d'occupation sous laquelle une case est jugée libre
+HEUR_COLL_RADIUS = 1.5   # m : distance minimale à un autre drone
 
-_HEUR_STATE: Dict[int, Dict[str, Any]] = {}
+_HEUR_STATE: Dict[int, Dict[str, Any]] = {}   # direction en cours de chaque drone (clé : id de son générateur aléatoire)
 
 
 def _count_unknown_neighbors(gx: int, gy: int, belief: BeliefGrid) -> int:
+    """Compte les cases inconnues (probabilité entre 0,4 et 0,6) dans le carré 3 × 3 centré sur (gx, gy)."""
     n = 0
     p = belief.probability
     for dy in range(-1, 2):
@@ -218,6 +233,8 @@ def select_action_heuristic(pos_x: float, pos_y: float,
                             rng: np.random.Generator,
                             resilience_phase: str = "normal"
                             ) -> Tuple[Tuple[str, float, float], List[Dict], int]:
+    """Choisit l'action heuristique : garde sa direction tant qu'elle reste libre, sinon en tire une nouvelle
+    (de préférence vers de l'inconnu) ; renvoie le même triplet que select_action."""
     del resilience_phase
     plan_belief = mix_beliefs(belief, fused, cfg.fusion_mix) if fused else belief
     bx0, by0, bx1, by1 = _planner_bounds(cfg)
@@ -303,6 +320,7 @@ def select_action_heuristic(pos_x: float, pos_y: float,
 
 
 def get_planner(name: str):
+    """Renvoie la fonction de choix d'action : select_action_heuristic si name vaut "heuristic", sinon select_action (AIF)."""
     if name == "heuristic":
         return select_action_heuristic
     return select_action

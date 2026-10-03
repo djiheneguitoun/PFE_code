@@ -1,3 +1,9 @@
+"""Architecture centralisée : un serveur distant (le « cloud ») décide pour tous les drones.
+
+Le cloud planifie sur la carte fusionnée de tout l'essaim ; l'action n'arrive au drone qu'après
+l'aller-retour réseau (cloud_round_trip_ms : 500 ms, soit 1 pas). Si le lien cloud est coupé, les drones
+attendent la bascule (switch_latency_ms : 2 s), puis décident seuls comme en distribué.
+"""
 from __future__ import annotations
 
 import math
@@ -11,9 +17,11 @@ from .distributed import DistributedPlanner
 
 
 class CloudPlanner:
+    """Planificateur centralisé (« cloud »), avec repli automatique en distribué si le lien cloud est coupé."""
 
     def __init__(self, cfg, msg_queue: MessageQueue,
                  ns3: NS3LatencyReader, link_state: LinkState):
+        """Prépare le planificateur (AIF ou heuristique) et un planificateur distribué de secours."""
         self.cfg = cfg
         self.msg_queue = msg_queue
         self.ns3 = ns3
@@ -21,12 +29,13 @@ class CloudPlanner:
         self.prior_lo = logit(cfg.prior_occupancy)
         self._plan_fn = get_planner(cfg.planner)
 
-        # Fallback distribué après transition
+        # Planificateur distribué utilisé après la bascule (lien cloud coupé)
         self._dist_fallback = DistributedPlanner(cfg, msg_queue, ns3, link_state)
 
         self._switch_active_at_step: Optional[int] = None
 
     def _phase(self, current_step: int) -> str:
+        """Renvoie le mode du pas : "cloud" (lien actif), "switching" (bascule en cours) ou "distributed_fallback"."""
         if self.link_state.cloud_link_active:
             return "cloud"
         if self._switch_active_at_step is None:
@@ -36,7 +45,9 @@ class CloudPlanner:
         return "distributed_fallback"
 
     def broadcast_beliefs(self, active_agents: List, current_step: int) -> None:
-        # Détection initiale du cut → on programme la transition
+        """Repère la coupure du cloud (programme la bascule, jette les actions en route) ;
+        en mode secours, fait échanger les cartes entre drones comme en distribué."""
+        # Première fois qu'on voit la coupure : on programme la bascule.
         if not self.link_state.cloud_link_active and self._switch_active_at_step is None:
             switch_steps = max(1, math.ceil(
                 self.cfg.switch_latency_ms / self.cfg.step_dt_ms
@@ -52,6 +63,7 @@ class CloudPlanner:
             self._dist_fallback.broadcast_beliefs(active_agents, current_step)
 
     def _drop_in_flight_actions(self) -> None:
+        """Retire de la file les actions du cloud encore en route (perdues avec la coupure) et les compte perdues."""
         kept = []
         dropped = 0
         for entry in self.msg_queue._pending:  # noqa: SLF001
@@ -70,6 +82,7 @@ class CloudPlanner:
 
     def plan_step(self, active_agents: List, global_fused_belief: BeliefGrid,
                   phase: str, current_step: int) -> None:
+        """Selon le mode : le cloud décide, ou les drones attendent la bascule, ou le secours distribué décide."""
         ph = self._phase(current_step)
 
         if ph == "cloud":
@@ -87,6 +100,8 @@ class CloudPlanner:
     def _plan_cloud_mode(self, active_agents: List,
                          global_fused_belief: BeliefGrid,
                          phase: str, current_step: int) -> None:
+        """Fait calculer et envoyer les nouvelles actions par le cloud, puis fait exécuter à chaque drone
+        l'action reçue (calculée un aller-retour plus tôt) ; sans action reçue, le drone reste sur place."""
         actions = self._cloud_compute_actions(active_agents, global_fused_belief, phase)
         self._cloud_send_actions(actions, current_step)
 
@@ -98,7 +113,7 @@ class CloudPlanner:
                 a.last_decision_source = "cloud"
                 a.execute(action)
             else:
-                # Warmup : pas encore reçu d'action du cloud
+                # Démarrage : aucune action du cloud n'est encore arrivée, le drone reste sur place
                 a.last_action_fresh = False
                 a.last_decision_source = "cloud_warmup"
                 a.last_plan_belief = a.belief
@@ -108,6 +123,8 @@ class CloudPlanner:
                                global_fused_belief: BeliefGrid,
                                phase: str
                                ) -> Dict[int, Tuple[str, float, float]]:
+        """Calcule l'action de chaque drone, l'un après l'autre, sur la carte fusionnée ; renvoie {id: action}.
+        Les cibles déjà attribuées aux drones précédents comptent comme des drones à éviter."""
         actions: Dict[int, Tuple[str, float, float]] = {}
         intended_targets: List[Tuple[float, float]] = []
 
@@ -135,6 +152,7 @@ class CloudPlanner:
 
     def _cloud_send_actions(self, actions: Dict[int, Tuple[str, float, float]],
                             current_step: int) -> None:
+        """Envoie à chaque drone son action, qui arrivera après l'aller-retour du cloud (cloud_round_trip_ms)."""
         rtt = self.cfg.cloud_round_trip_ms
         step_dt_ms = self.cfg.step_dt_ms
         for did, action in actions.items():
@@ -142,6 +160,7 @@ class CloudPlanner:
                                 current_step, rtt, step_dt_ms)
 
     def _plan_switching_mode(self, active_agents: List) -> None:
+        """Pendant la bascule, ne donne aucune nouvelle action : les drones gardent leur dernière cible."""
         for a in active_agents:
             a.last_action_fresh = False
             a.last_decision_source = "switching"

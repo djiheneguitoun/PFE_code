@@ -1,17 +1,10 @@
-"""Le drone sait-il où il est ?
+"""Test 6 (étape 1) : où est vraiment la caméra ? Trois mesures de la distance drone-panneau.
 
-Le test 3 a laissé un doute sérieux : la taille du QR dans l'image indiquait une distance
-d'environ deux tiers de celle que le pilote croyait avoir. Ce test tranche, en comparant trois
-estimations indépendantes de la même distance à chaque point de mesure :
-
-  - ce que croit le pilote, c'est-à-dire la position rapportée par le drone ;
-  - la pose de la caméra lue dans le simulateur ;
-  - la distance optique, déduite de la taille du code dans l'image.
-
-La distance optique fait référence : une caméra fixe placée à des distances connues la retrouve
-à 1 % près.
-
-  DISPLAY=:1 run.py --seed 7
+Origine : au test 3, la taille du QR dans l'image donnait environ deux tiers de la distance que
+croyait le pilote. À 1, 2 et 3 m d'un panneau, on compare : la position du centre du drone (lue
+dans le simulateur, celle qu'utilise le pilote), celle de la caméra gauche (lue dans le
+simulateur) et la distance optique (taille du code dans l'image ; à 1 % près à caméra fixe).
+  DISPLAY=:1 $PY swarm_qr/experiments/06_position_vraie/run.py --seed 7
 """
 
 from __future__ import annotations
@@ -22,8 +15,8 @@ import math
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+HERE = Path(__file__).resolve().parent  # dossier du test : toutes les sorties y sont écrites
+ROOT = HERE.parents[2]                  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -49,18 +42,20 @@ from swarm_qr.env.layout import make_layout  # noqa: E402
 from swarm_qr.env.pilot import Pilot  # noqa: E402
 from swarm_qr.experiments import _img  # noqa: E402
 
-DISTANCES = (1.0, 2.0, 3.0)
-FLY_ALT = 1.6
-CAM_BELOW = 0.11
+DISTANCES = (1.0, 2.0, 3.0)   # m : distances visées entre le centre du drone et le panneau
+FLY_ALT = 1.6                 # m : altitude de décollage
+CAM_BELOW = 0.11              # m : la caméra est 11 cm sous le centre du drone
 CODE_FRACTION = 21.0 / 25.0   # le code occupe 21 modules sur les 25 du panneau
 
 
 def capture(scene):
+    """Renvoie une image à jour (BGR) de la caméra gauche du drone 0."""
     return _img.to_bgr(scene.capture("left", 0))
 
 
 def cote_du_code(bgr, texte_attendu):
-    """Côté moyen du code voulu, en pixels, ou None s'il n'est pas lu."""
+    """Renvoie le côté moyen, en pixels, du QR dont le texte est `texte_attendu`, ou None s'il
+    n'est pas lu."""
     for res in zxingcpp.read_barcodes(bgr[:, :, ::-1]):
         if res.text != texte_attendu:
             continue
@@ -72,6 +67,8 @@ def cote_du_code(bgr, texte_attendu):
 
 
 def main() -> None:
+    """Fait décoller le drone, le place à 1, 2 et 3 m du panneau et note les trois distances ;
+    écrit vue_<d>m.jpg à chaque point et resultat.json."""
     scene = scene_mod.build(make_layout(args.seed), with_sitl=True, n_drones=1)
     scene.world.reset()
     scene.finalize()
@@ -79,12 +76,14 @@ def main() -> None:
 
     cam = scene.cameras[0]["left"]
     K = np.asarray(cam.get_intrinsics_matrix())
-    fx = float(K[0, 0])
+    fx = float(K[0, 0])  # focale en pixels (886,8 px pour l'image de 1024 px de large)
 
     def get_pos():
+        """Renvoie la position du centre du drone 0 lue dans le simulateur, en mètres."""
         return scene.drones[0].state.position
 
     def get_yaw():
+        """Renvoie le cap (lacet) vrai du drone 0, en radians."""
         from scipy.spatial.transform import Rotation
         return float(Rotation.from_quat(scene.drones[0].state.attitude).as_euler("ZYX")[0])
 
@@ -104,6 +103,8 @@ def main() -> None:
     lignes = []
     print(f"\n{'vise':>6} {'pilote':>8} {'camera':>8} {'optique':>8}   {'ecart pilote':>13}")
     for d in DISTANCES:
+        # Le centre du drone vise la distance d ; on compense la hauteur de la caméra, pas son
+        # décalage sur le côté (c'est ce décalage que le test met en évidence).
         cible = np.array(tag.position) + n * d
         cible[2] = tag.position[2] + CAM_BELOW
         pilot.goto(cible, yaw, get_pos, tol=0.15, get_yaw=get_yaw)
@@ -116,6 +117,7 @@ def main() -> None:
         d_pilote = float(np.linalg.norm((p_pilote - np.array(tag.position))[:2]))
         d_cam = float(np.linalg.norm((p_cam - np.array(tag.position))[:2]))
         cote = cote_du_code(img, tag.tag_id)
+        # Distance optique = focale (px) × taille réelle du code (m) / taille du code dans l'image (px).
         d_opt = fx * taille_code / cote if cote else float("nan")
 
         lignes.append({

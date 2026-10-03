@@ -1,11 +1,8 @@
-"""Analyse hors ligne du banc — étape 2. Aucun simulateur.
+"""Analyse de l'étape 2, sans simulateur : relit les images du banc avec six lecteurs de QR.
 
-L'analyse commence par un contrôle d'intégrité : sur chaque image où la cible est lue, la
-distance déduite de l'image doit coller à la pose enregistrée. Si l'écart médian dépasse le
-seuil, les données sont corrompues et l'analyse s'arrête au lieu de produire des courbes.
-
-  analyse.py            tout
-  analyse.py --rapide   un seul lecteur, pour vérifier la chaîne
+Calcule les taux de lecture selon la distance, l'angle et la vitesse ; écrit resultats.json et
+enveloppe.png. S'arrête si la distance vue dans les images ne colle pas aux poses (écart > 8 cm).
+Lancement : python analyse.py   (--rapide : zxing seul, pour vérifier la chaîne)
 """
 
 from __future__ import annotations
@@ -28,20 +25,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--rapide", action="store_true")
 args = parser.parse_args()
 
+# Les six lecteurs comparés (noms des décodeurs de swarm_qr/perception.py) ; --rapide : zxing seul.
 LECTEURS = ("zxing",) if args.rapide else (
     "zxing", "zbar", "pyboof", "opencv_aruco", "opencv_aruco_x3", "opencv")
-REFERENCE = "zxing"
-SEUIL = 0.90                 # une bande appartient a l'enveloppe si p >= 90 %
-INTEGRITE_MAX_CM = 8.0       # au-dela, l'association image-pose est fausse : on s'arrete
+REFERENCE = "zxing"          # lecteur retenu : sert aux contrôles et aux campagnes à un seul lecteur
+SEUIL = 0.90                 # une tranche est « fiable » si au moins 90 % de ses images sont lues
+INTEGRITE_MAX_CM = 8.0       # cm : écart médian image/pose au-delà duquel l'association est fausse (arrêt)
 
-BORNES_D = [0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 1.8, 2.2, 2.7, 3.3, 4.0, 5.0, 6.5, 8.1]
-BORNES_A = [0, 10, 20, 30, 40, 50, 60, 76]
+BORNES_D = [0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 1.8, 2.2, 2.7, 3.3, 4.0, 5.0, 6.5, 8.1]   # m : tranches de distance
+BORNES_A = [0, 10, 20, 30, 40, 50, 60, 76]                                          # degrés : tranches d'angle
 
 
 # ---------------------------------------------------------------- briques
 
 def wilson(succes: int, total: int, z: float = 1.96):
-    """Intervalle de confiance d'une proportion ; l'intervalle naïf ment quand n est petit."""
+    """Renvoie (proportion, borne basse, borne haute) de l'intervalle de confiance à 95 % de Wilson,
+    choisi car l'intervalle naïf est faux quand il y a peu d'images."""
     if total == 0:
         return 0.0, 0.0, 0.0
     p = succes / total
@@ -52,6 +51,7 @@ def wilson(succes: int, total: int, z: float = 1.96):
 
 
 def charge(nom: str):
+    """Charge meta_<nom>.json et poses_<nom>.jsonl ; renvoie (meta, lignes), ou (None, []) s'ils manquent."""
     manifeste = HERE / f"poses_{nom}.jsonl"
     meta = HERE / f"meta_{nom}.json"
     if not manifeste.exists() or not meta.exists():
@@ -61,9 +61,8 @@ def charge(nom: str):
 
 
 def projette_panneau(m, K):
-    """Où le panneau visé doit apparaître dans l'image, d'après la pose vraie. Sans cela, le
-    « repérage » compterait n'importe quel carré sombre — rack, carton, ombre — et vaudrait
-    100 % partout, donc rien."""
+    """Renvoie (centre, côté) en pixels du code visé, prévus par la pose vraie, ou None s'il est hors
+    champ ; sans cela, n'importe quel carré sombre (rack, carton, ombre) compterait comme repéré."""
     from scipy.spatial.transform import Rotation
 
     w, x, y, z = m["cam_quat"]
@@ -89,7 +88,8 @@ def projette_panneau(m, K):
 
 
 def examine(nom: str, lecteurs=LECTEURS):
-    """Une ligne de résultat par image et par lecteur, plus le repérage sur la face visée."""
+    """Relit chaque image de la campagne avec chaque lecteur ; renvoie (meta, lignes) avec, par image
+    et par lecteur : lu ou non, lectures fantômes, erreur de distance (m), motif repéré au bon endroit."""
     meta, lignes = charge(nom)
     if meta is None:
         return None, []
@@ -134,7 +134,8 @@ def examine(nom: str, lecteurs=LECTEURS):
 
 
 def controle_integrite(nom: str, lignes) -> float:
-    """La distance vue doit coller à la pose enregistrée, image par image."""
+    """Vérifie que la distance lue dans l'image colle à la pose enregistrée (zxing, angle ≤ 30°) ;
+    renvoie l'écart médian (cm) et arrête l'analyse s'il dépasse 8 cm."""
     errs = [abs(l["err_dist_m"]) for l in lignes
             if l["lecteur"] == REFERENCE and "err_dist_m" in l and l["alpha_deg"] <= 30]
     if not errs:
@@ -148,6 +149,8 @@ def controle_integrite(nom: str, lignes) -> float:
 
 
 def courbe(lignes, cle, bornes, lecteur, filtre=None):
+    """Découpe les images en tranches de `cle` (distance, angle…) ; renvoie, par tranche : nombre
+    d'images, taux de lecture avec son intervalle à 95 %, et taux de repérage."""
     sel = [l for l in lignes if l["lecteur"] == lecteur and (filtre is None or filtre(l))]
     out = []
     for a, b in zip(bornes[:-1], bornes[1:]):
@@ -163,6 +166,7 @@ def courbe(lignes, cle, bornes, lecteur, filtre=None):
 
 
 def limite(pts, seuil=SEUIL):
+    """Renvoie la portée : centre de la tranche la plus lointaine lue à 90 % ou plus (None si aucune)."""
     bons = [c["centre"] for c in pts if c["p_lu"] >= seuil]
     return max(bons) if bons else None
 
@@ -170,12 +174,16 @@ def limite(pts, seuil=SEUIL):
 # ---------------------------------------------------------------- volets
 
 def volet_optique(res):
+    """Analyse la campagne optique pour les six lecteurs : zone utile (≤ 2 m et ≤ 30°), portée,
+    erreur de distance et les trois courbes (distance, angle, distance apparente)."""
     meta, lignes = examine("optique")
     if meta is None:
         print("pas de campagne optique")
         return
     print(f"banc optique : {meta['images']} images")
     controle_integrite("optique", lignes)
+    # Filtres : la courbe en distance ne garde que les vues de face (≤ 20°),
+    # la courbe en angle que les vues de près (≤ 2 m).
     de_face = lambda l: l["alpha_deg"] <= 20.0
     de_pres = lambda l: l["D_m"] <= 2.0
     res["optique"] = {"images": meta["images"], "retard_mesure": meta.get("retard_mesure"),
@@ -198,6 +206,7 @@ def volet_optique(res):
 
 
 def volet_sans_qr(res):
+    """Compte, dans l'entrepôt sans QR, les lectures fantômes de chaque lecteur et le faux repérage."""
     meta, lignes = examine("sans_qr")
     if meta is None:
         return
@@ -214,6 +223,7 @@ def volet_sans_qr(res):
 
 
 def volet_second_entrepot(res):
+    """Analyse la campagne de l'entrepôt 9019 avec zxing : zone utile et courbe en distance apparente."""
     meta, lignes = examine("9019", lecteurs=(REFERENCE,))
     if meta is None:
         return
@@ -227,6 +237,7 @@ def volet_second_entrepot(res):
 
 
 def volet_vol(res):
+    """Analyse les images du drone en vol stationnaire avec zxing : courbe en distance apparente."""
     meta, lignes = examine("vol", lecteurs=(REFERENCE,))
     if meta is None:
         return
@@ -237,9 +248,8 @@ def volet_vol(res):
 
 
 def volet_traversee(res):
-    """Les images sont en retard d'un nombre constant de rendus. On retrouve ce décalage en
-    alignant la distance vue sur la distance des poses passées, on publie le résidu, puis on
-    calcule les taux sur la pose corrigée."""
+    """Analyse les traversées : retrouve le retard constant image/pose (en images), puis compte, par
+    vitesse, les images lues parmi celles où le panneau est entièrement dans le cadre."""
     meta, lignes_brutes = charge("traversee")
     if meta is None:
         return
@@ -267,11 +277,13 @@ def volet_traversee(res):
         decode[(m["run"], m["indice"])] = (bool(cible), d_opt)
 
     def dist_pose(run, idx):
+        """Renvoie la distance caméra-panneau (m) notée pour l'image `idx` de la traversée `run`, ou None."""
         m = par_run.get(run, {}).get(idx)
         if m is None:
             return None
         return float(np.linalg.norm(np.array(m["cam_pos"]) - np.array(m["tag_pos"])))
 
+    # Essaie un retard de 0 à 8 images et garde celui qui aligne le mieux distance vue et distance notée.
     candidats = []
     for k in range(0, 9):
         errs = [abs(dist_pose(r, i - k) - d) for (r, i), (lu, d) in decode.items()
@@ -286,10 +298,10 @@ def volet_traversee(res):
     if 100 * residu > INTEGRITE_MAX_CM:
         raise RuntimeError(f"traversee : residu {100 * residu:.1f} cm, association fausse")
 
-    # Le denominateur : les images ou le panneau est geometriquement DANS le cadre, calcule
-    # depuis la pose corrigee du retard. En longeant le rack, le panneau n'est visible que
-    # pendant un court troncon ; compter les autres images compterait des echecs sur des
-    # photos ou le code n'apparait pas.
+    # Le dénominateur : les images où le panneau est géométriquement DANS le cadre, calculé
+    # depuis la pose corrigée du retard. En longeant le rack, le panneau n'est visible que
+    # pendant un court tronçon ; compter les autres images compterait des échecs sur des
+    # photos où le code n'apparaît pas.
     stats: dict = {}
     for m in lignes_brutes:
         ref = par_run[m["run"]].get(m["indice"] - k)
@@ -318,6 +330,7 @@ def volet_traversee(res):
 # ---------------------------------------------------------------- sorties
 
 def figure(res):
+    """Trace enveloppe.png : taux de lecture par lecteur selon la distance, l'angle et la distance apparente."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -353,6 +366,7 @@ def figure(res):
 
 
 def resume(res):
+    """Affiche le bilan : zone utile, portée, erreur de chaque lecteur, lectures fantômes, second entrepôt."""
     opt = res.get("optique", {}).get("lecteurs", {})
     print("\n" + "=" * 70)
     print(f"{'lecteur':<18}{'zone utile':>11}{'portee apparente':>18}{'err distance':>14}")
@@ -373,6 +387,7 @@ def resume(res):
 
 
 def main():
+    """Lance les cinq volets, écrit resultats.json, trace enveloppe.png et affiche le bilan."""
     res = {}
     volet_optique(res)
     volet_sans_qr(res)

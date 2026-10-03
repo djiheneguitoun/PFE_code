@@ -1,15 +1,8 @@
-"""Banc de la carte partagée — étape 4.
+"""Banc de l'étape 4 (carte partagée) : contrôle le lidar, puis fait patrouiller un drone guidé par sa seule carte.
 
-  banc.py --mode verifie                  contrôles de la chaîne lidar → carte, sans vol
-  banc.py --mode vol [--etages 0,1,2]     patrouille : la carte se remplit et guide le drone
-
-Commande : DISPLAY=:1 PYTHONUNBUFFERED=1 timeout -s KILL 3h ~/isaac5_env/bin/python banc.py --mode ...
-
-Le mode `verifie` s'arrête si le lidar ne dit pas la vérité — chaque rayon est refait par le
-moteur physique — ou si sa conversion vers le repère du monde dépend du cap du drone. Le mode
-`vol` ne connaît pas le plan de l'entrepôt : chaque déplacement est calculé sur la carte que
-le drone a découverte lui-même. Il enregistre la carte, la trajectoire vraie et la vérité des
-panneaux ; le jugement se fait ensuite par `analyse.py`, sans simulateur.
+`--mode verifie` : contrôles lidar → carte, sans vol ; `--mode vol --etages 0,1,2` : patrouille sans le plan
+de l'entrepôt, qui enregistre carte et vol pour analyse.py. Lancé par campagne.sh, ou depuis ce dossier :
+    DISPLAY=:1 PYTHONUNBUFFERED=1 timeout -s KILL 3h ~/isaac5_env/bin/python banc.py --mode verifie
 """
 
 from __future__ import annotations
@@ -21,10 +14,12 @@ import sys
 import time
 from pathlib import Path
 
+# dossier de ce banc ; la racine du projet est ajoutée au chemin d'import
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 
+# chaque ligne affichée aussitôt (journal suivi en direct)
 sys.stdout.reconfigure(line_buffering=True)
 
 parser = argparse.ArgumentParser()
@@ -38,6 +33,7 @@ args, _ = parser.parse_known_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
+# Isaac Sim doit démarrer avant tout import omni ; l'option coupe la vérification de version du pilote graphique
 simulation_app = SimulationApp(
     {"headless": True, "extra_args": ["--/rtx/verifyDriverVersion/enabled=false"]}
 )
@@ -56,23 +52,24 @@ from swarm_qr.env.layout import make_layout  # noqa: E402
 from swarm_qr.env.pilot import PHYS_DT, Clock, Pilot  # noqa: E402
 from swarm_qr.experiments import _img  # noqa: E402
 
-FLY_ALT = 1.6
-RECUL = 2.2                 # distance de patrouille au bord d'un rack ; les cartons sont 20 cm en retrait
-RECUL_MIN = 0.9             # dans une allée étroite, on se rapproche plutôt que d'y renoncer
-MARGE_OPPOSEE = 0.85        # distance minimale gardée avec le rack ou le mur d'en face
-HAUTEUR_PANNEAU = 0.225     # le QR est au milieu de la face d'un carton de 50 cm posé sur l'étagère
-V_PATROUILLE = 0.6
-PHYS_PAR_IMAGE = 160        # cadence de mission : 5 images par seconde
-INCIDENCE_MAX = 60.0        # au-delà, la position déduite des quatre coins n'est plus fiable
-DEPORT_RAYON = 0.45         # au-delà de la coque : un rayon parti du centre touche le drone
-TOL_LIDAR_CM = 10.0
-TOL_ROTATION_CM = 15.0
-PANNEAU_M = 0.40
+FLY_ALT = 1.6               # m : altitude de décollage et du point de contrôle
+RECUL = 2.2                 # m : distance de patrouille au bord d'un rack ; les cartons sont 20 cm en retrait
+RECUL_MIN = 0.9             # m : dans une allée étroite, on se rapproche jusque-là plutôt que d'y renoncer
+MARGE_OPPOSEE = 0.85        # m : distance minimale gardée avec le rack ou le mur d'en face
+HAUTEUR_PANNEAU = 0.225     # m : le QR est au milieu de la face d'un carton de 50 cm posé sur l'étagère
+V_PATROUILLE = 0.6          # m/s : vitesse d'approche du contrôleur pendant la patrouille
+PHYS_PAR_IMAGE = 160        # pas de physique par image : cadence de mission, 5 images par seconde
+INCIDENCE_MAX = 60.0        # degrés : au-delà, la position déduite des quatre coins n'est plus fiable
+DEPORT_RAYON = 0.45         # m : départ du rayon de contrôle, au-delà de la coque (parti du centre, il touche le drone)
+TOL_LIDAR_CM = 10.0         # cm : écart médian maximal toléré entre le lidar et le moteur physique
+TOL_ROTATION_CM = 15.0      # cm : écart maximal toléré entre les nuages pris aux caps 0 et 90 degrés
+PANNEAU_M = 0.40            # m : côté nominal d'une étiquette QR
 
 
 # ---------------------------------------------------------------- vérité terrain
 
 def dans_un_rack(points, layout, marge: float = 0.0) -> np.ndarray:
+    """Renvoie, pour chaque point, vrai s'il tombe dans l'emprise au sol d'un rack élargie de `marge` m."""
     p = np.atleast_2d(np.asarray(points, float))
     out = np.zeros(len(p), dtype=bool)
     for r in layout.racks:
@@ -83,6 +80,7 @@ def dans_un_rack(points, layout, marge: float = 0.0) -> np.ndarray:
 
 
 def hors_des_murs(points, marge: float = 0.0) -> np.ndarray:
+    """Renvoie vrai pour les points hors de l'intérieur de l'entrepôt ; avec une marge négative, la bande de |marge| m le long des murs compte aussi."""
     p = np.atleast_2d(np.asarray(points, float))
     return ~((p[:, 0] > INTERIOR.x_min - marge) & (p[:, 0] < INTERIOR.x_max + marge)
              & (p[:, 1] > INTERIOR.y_min - marge) & (p[:, 1] < INTERIOR.y_max + marge))
@@ -91,6 +89,7 @@ def hors_des_murs(points, marge: float = 0.0) -> np.ndarray:
 # ---------------------------------------------------------------- contrôles
 
 def pose_drone(scene, pos, cap_rad: float) -> None:
+    """Téléporte le drone 0 en `pos` avec le cap donné (rad), puis rend 3 images pour rafraîchir le lidar."""
     scene.drones[0].set_world_pose(
         position=np.asarray(pos, float),
         orientation=Rotation.from_euler("z", cap_rad).as_quat()[[3, 0, 1, 2]])
@@ -99,9 +98,8 @@ def pose_drone(scene, pos, cap_rad: float) -> None:
 
 
 def controle_contre_la_physique(scene, pos, cap_rad: float, echantillon: int = 5) -> dict:
-    """Chaque rayon du lidar est refait par le moteur physique ; les deux distances doivent
-    coïncider. Le rayon de contrôle part au-delà de la coque, sinon la physique touche le
-    drone lui-même."""
+    """Compare un rayon lidar sur cinq au même rayon refait par le moteur physique (parti à 45 cm, hors de la coque).
+    Lève une erreur si l'écart médian dépasse 10 cm ou si plus de 5 % des rayons sont faux ; renvoie le bilan."""
     from omni.physx import get_physx_scene_query_interface
 
     pose_drone(scene, pos, cap_rad)
@@ -126,6 +124,7 @@ def controle_contre_la_physique(scene, pos, cap_rad: float, echantillon: int = 5
 
 
 def nuage(scene, pos, cap_rad: float) -> np.ndarray:
+    """Renvoie le nuage de points (repère du monde) d'un tour de lidar pris depuis `pos` au cap donné."""
     pose_drone(scene, pos, cap_rad)
     dirs, portees = scene.lidar(0)
     ok = np.isfinite(portees) & (portees > 0)
@@ -133,8 +132,8 @@ def nuage(scene, pos, cap_rad: float) -> np.ndarray:
 
 
 def controle_rotation(scene, pos) -> float:
-    """Le monde ne bouge pas quand le drone tourne : les nuages pris à deux caps doivent se
-    superposer. C'est ce qui prouve que la conversion vers le repère du monde est juste."""
+    """Vérifie que les nuages pris aux caps 0 et 90 degrés se superposent (écart médian ≤ 15 cm) : le passage
+    au repère du monde est juste. Renvoie l'écart en cm."""
     pres = lambda p: p[np.linalg.norm(p[:, :2] - np.asarray(pos)[:2], axis=1) < 6.0]
     a, b = pres(nuage(scene, pos, 0.0)), pres(nuage(scene, pos, math.pi / 2))
     d = np.linalg.norm(a[:, None, :2] - b[None, :, :2], axis=2).min(axis=1)
@@ -146,9 +145,8 @@ def controle_rotation(scene, pos) -> float:
 
 
 def controle_allees(scene, layout, pos) -> float:
-    """À hauteur de vol, un point touché doit tomber sur un rack ou un mur, jamais dans une
-    allée libre. L'entrepôt contient d'autres objets à d'autres hauteurs ; on ne juge que la
-    bande où le drone vole."""
+    """Vérifie qu'à hauteur de vol (0,6 à 5,5 m, à moins de 8 m) au moins 95 % des points touchés sont sur un
+    rack ou un mur, jamais dans une allée libre ; renvoie cette part."""
     pts = nuage(scene, pos, 0.0)
     pres = pts[np.linalg.norm(pts[:, :2] - np.asarray(pos)[:2], axis=1) < mapping.PORTEE_CARTE]
     bande = pres[(pres[:, 2] > 0.6) & (pres[:, 2] < 5.5)]
@@ -161,12 +159,14 @@ def controle_allees(scene, layout, pos) -> float:
 
 
 def point_de_controle(layout):
+    """Renvoie le point des contrôles : au milieu de l'allée entre les deux premiers racks, à 1,6 m de haut."""
     r0, r1 = layout.racks[0], layout.racks[1]
     x = 0.5 * (r0.x_bounds[1] + r1.x_bounds[0])
     return np.array([x, 0.5 * (r0.y_bounds[0] + r0.y_bounds[1]), FLY_ALT])
 
 
 def mode_verifie() -> None:
+    """Lance les trois contrôles du lidar sans vol, mesure le coût d'une observation, écrit verification.json et vue_un_tour.png."""
     layout = make_layout(args.seed)
     scene = scene_mod.build(layout, with_sitl=False, n_drones=1)
     scene.world.reset()
@@ -208,7 +208,7 @@ def mode_verifie() -> None:
 # ---------------------------------------------------------------- patrouille
 
 def allees(layout):
-    """Les bandes libres entre murs et racks, avec les faces à lire dans chacune."""
+    """Renvoie les allées (bandes libres entre murs et racks, d'ouest en est) avec les faces de rack à lire dans chacune."""
     racks = sorted(layout.racks, key=lambda r: r.x)
     bornes = [INTERIOR.x_min] + [x for r in racks for x in r.x_bounds] + [INTERIOR.x_max]
     out = []
@@ -224,9 +224,8 @@ def allees(layout):
 
 
 def trajets(layout, etages, spawn_x: float, n_allees: int):
-    """La liste des allers simples : chaque face de rack longée à chaque hauteur. L'ordre suit
-    l'espace découvert : l'allée du départ d'abord, puis les voisines de proche en proche, et
-    chaque nouvelle allée est rejointe par le couloir que le passage précédent a révélé."""
+    """Renvoie les allers simples (chaque face longée à chaque étage), l'allée du départ d'abord puis les voisines
+    de proche en proche ; une allée où le recul tombe sous 0,9 m est sautée."""
     liste = allees(layout)
     k0 = next((a["k"] for a in liste if a["x0"] <= spawn_x < a["x1"]), 0)
     ordre = [a for a in liste if a["k"] >= k0] + [a for a in reversed(liste) if a["k"] < k0]
@@ -257,10 +256,10 @@ from swarm_qr.observation import Observateur  # noqa: E402
 
 
 class Patrouille:
-    """La patrouille d'un drone : ses observations versées dans une carte neuve. La mécanique
-    d'observation est celle du système (`swarm_qr.observation`), commune à la mission."""
+    """La patrouille d'un drone : une carte neuve, remplie par l'observateur du système (`swarm_qr.observation`)."""
 
     def __init__(self, scene, layout, K, detecteur=None):
+        """Crée la carte vide et l'observateur du drone 0, et ajoute un compteur de chemins recalculés."""
         self.scene, self.layout, self.K = scene, layout, K
         self.carte = mapping.Carte()
         self.obs = Observateur(scene, self.carte, K, drone=0, detecteur=detecteur)
@@ -270,16 +269,20 @@ class Patrouille:
 
     @property
     def trajectoire(self):
+        """Renvoie la trajectoire vraie enregistrée par l'observateur : une ligne [t, x, y, z] par image."""
         return self.obs.trajectoire
 
     def observe(self, t: float) -> None:
+        """Verse dans la carte l'observation de l'instant `t` : lidar, couverture et codes lus."""
         self.obs.observe(t)
 
 
+# dossier des sorties : --sortie s'il est donné, sinon ce dossier
 SORTIE = Path(args.sortie) if args.sortie else HERE
 
 
 def mode_vol() -> None:
+    """Fait voler la patrouille : chaque transit est calculé sur la carte découverte et revérifié en vol ; enregistre carte, vol.json, vues et vidéo."""
     SORTIE.mkdir(parents=True, exist_ok=True)
     etages = [int(e) for e in args.etages.split(",")]
     layout = make_layout(args.seed)
@@ -308,7 +311,7 @@ def mode_vol() -> None:
     pat = Patrouille(scene, layout, K, detecteur)
 
     def pas(t_max: float | None = None) -> None:
-        """Un pas de mission : commande, physique, rendu, observation."""
+        """Avance d'un pas de mission (0,2 s) : commande, 160 pas de physique dont le dernier rendu, puis observation."""
         ctrl.tick()
         for _ in range(PHYS_PAR_IMAGE - 1):
             scene.world.step(render=False)
@@ -409,6 +412,7 @@ def mode_vol() -> None:
 
 MODES = {"verifie": mode_verifie, "vol": mode_vol}
 
+# lance le mode choisi ; Isaac Sim est refermé dans tous les cas, même après une erreur
 try:
     MODES[args.mode]()
     print(f"BANC {args.mode.upper()} FINI")

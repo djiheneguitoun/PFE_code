@@ -1,4 +1,9 @@
 #!/bin/bash
+# Installation, étape 1/5 : paquets système (outils de compilation, Python 3 et bibliothèques
+# pour ArduPilot, GStreamer pour la vidéo) et outils Python des drones (pymavlink, MAVProxy, dronekit).
+# À lancer en premier, avec un compte qui a sudo (Ubuntu) :
+#   bash scripts/installation/01_install_dependencies.sh
+# Arrête le script à la première commande en échec
 set -e
 
 echo "=============================================="
@@ -52,7 +57,8 @@ sudo apt-get install -y \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly
 
-# Outils Python supplémentaires via pip
+# Outils Python supplémentaires via pip (pour l'utilisateur courant) : numpy limité aux versions 1.x,
+# pymavlink/MAVProxy (dialogue MAVLink avec le pilote automatique), dronekit et son SITL
 pip3 install --user "numpy<2" pymavlink MAVProxy pexpect dronekit dronekit-sitl
 
 echo ""

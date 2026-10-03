@@ -1,21 +1,23 @@
-"""La figure d'architecture du chapitre 3 : composants, échanges et boucle de décision.
-
-    architecture.py               avec les technologies nommées
-    architecture.py --sans-techs  sans elles, si le chapitre de conception doit rester abstrait
+"""Dessine la figure d'architecture du chapitre 3 (composants, échanges, boucle de décision) et
+l'écrit dans architecture.svg, à côté du script (architecture.png en a été converti à part).
+    python architecture.py               (avec les technologies nommées)
+    python architecture.py --sans-techs  (sans elles, pour un chapitre de conception abstrait)
 """
 import sys
 from pathlib import Path
 
-TECHS = "--sans-techs" not in sys.argv
+TECHS = "--sans-techs" not in sys.argv   # faux avec --sans-techs : les lignes « ~ » sont omises
 
-W, H = 1560, 1132
+W, H = 1560, 1132                         # taille de la figure (px)
+# palette : fond, texte, et une couleur par bloc (perception, carte, décision, guide...)
 C = {"fond": "#F6F8F7", "cadre": "#C9D3CF", "encre": "#16201C", "douce": "#5F6B66",
      "percep": "#0B7285", "carte": "#B07A22", "decision": "#364FC7", "guide": "#7A3E9D",
      "super": "#6B7670", "lu": "#2F9E44", "alerte": "#C92A2A", "signal": "#E8590C"}
-out = []
+out = []                                  # éléments SVG accumulés, écrits à la fin
 
 
 def texte(x, y, s, taille=11.5, couleur=None, gras=False, ancre="start", italique=False):
+    """Ajoute un texte SVG en (x, y), avec sa taille, sa couleur, son ancrage, en gras ou en italique."""
     st = f'font-size="{taille}" fill="{couleur or C["encre"]}" text-anchor="{ancre}"'
     if gras:
         st += ' font-weight="650"'
@@ -25,6 +27,8 @@ def texte(x, y, s, taille=11.5, couleur=None, gras=False, ancre="start", italiqu
 
 
 def cadre(x, y, w, h, titre, lignes, couleur, ombre=False, note=None):
+    """Ajoute un grand bloc : rectangle arrondi à bandeau de titre, ombre en option (« un parmi N »)
+    et note en italique à droite du titre."""
     if ombre:
         for d in (10, 5):
             out.append(f'<rect x="{x+d}" y="{y+d}" width="{w}" height="{h}" rx="10" '
@@ -39,6 +43,8 @@ def cadre(x, y, w, h, titre, lignes, couleur, ombre=False, note=None):
 
 
 def sous(x, y, w, h, titre, lignes, couleur):
+    """Ajoute un sous-bloc avec titre et lignes à puces ; les lignes « ~ » (technologies) sont en
+    italique, et omises avec --sans-techs."""
     out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="7" fill="{couleur}" opacity="0.055"/>')
     out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="7" fill="none" '
                f'stroke="{couleur}" stroke-width="1" stroke-opacity="0.45"/>')
@@ -58,6 +64,7 @@ def sous(x, y, w, h, titre, lignes, couleur):
 
 
 def fleche(points, couleur, pointille=False, epais=2.0):
+    """Ajoute une flèche en ligne brisée passant par `points`, pleine ou pointillée."""
     d = "M " + " L ".join(f"{x},{y}" for x, y in points)
     dash = ' stroke-dasharray="6 4"' if pointille else ""
     out.append(f'<path d="{d}" fill="none" stroke="{couleur}" stroke-width="{epais}"{dash} '
@@ -65,7 +72,7 @@ def fleche(points, couleur, pointille=False, epais=2.0):
 
 
 def eti(x, y, lignes, couleur):
-    """Une étiquette posée sur un trait : fond blanc, une ou plusieurs lignes centrées."""
+    """Ajoute une étiquette posée sur un trait : fond blanc, une ou plusieurs lignes centrées."""
     lignes = [lignes] if isinstance(lignes, str) else lignes
     lg = max(len(s) for s in lignes) * 5.7 + 18
     ht = 15 * len(lignes) + 6
@@ -76,10 +83,10 @@ def eti(x, y, lignes, couleur):
 
 
 # ------------------------------------------------------------------ colonnes
-AX, AW = 40, 376        # véhicule
-BX, BW = 540, 420       # carte partagée
-CX, CW = 1060, 460      # décision
-CA, CB = 478, 1010      # les deux couloirs verticaux libres
+AX, AW = 40, 376        # véhicule : x et largeur de la colonne (px)
+BX, BW = 540, 420       # carte partagée (px)
+CX, CW = 1060, 460      # décision (px)
+CA, CB = 478, 1010      # x des deux couloirs verticaux libres, où passent les étiquettes (px)
 
 texte(W / 2, 42, "Architecture of the proposed system", 19, C["encre"], gras=True, ancre="middle")
 texte(W / 2, 64, "one shared map, N vehicles, and a decision loop that never commits before it observes",
@@ -152,7 +159,7 @@ sous(CX + 16, 206, CW - 32, 84 if TECHS else 68, "", [
     "~SmolVLM-500M / SmolVLM-2B / Qwen2-VL, 4-bit, LoRA optional"], C["guide"])
 
 # --- supervision -----------------------------------------------------------
-LARG = CX + CW - AX
+LARG = CX + CW - AX     # largeur totale des blocs pleine largeur (px)
 cadre(AX, 828, LARG, 116, "Mission supervision", [], C["super"], note="outside the vehicles")
 for k, (t, l) in enumerate([
         ("Rhythms", "flight control, decision and advice run at different rates"),
@@ -204,7 +211,7 @@ fleche([(BX + 40, 736), (BX + 40, 828)], C["super"], epais=1.5, pointille=True)
 eti(BX + 40, 756, "progress", C["super"])
 
 # ------------------------------------------------------------------ légende
-LY = 974
+LY = 974                # haut du cadre de légende « The loop » (px)
 out.append(f'<rect x="{AX}" y="{LY}" width="{LARG}" height="106" rx="10" '
            f'fill="#FFFFFF" stroke="{C["cadre"]}" stroke-width="1.2"/>')
 texte(AX + 16, LY + 24, "The loop", 12.5, C["encre"], gras=True)

@@ -1,18 +1,10 @@
-"""Sonde de vol automatique, sans fenêtre — les trois mesures qui décident.
+"""Test 5, sonde automatique sans fenêtre : décollage, stationnaire, arrêt et débit d'un drone SITL.
 
-Même recette que sonde_gui.py (chaîne validée : entrepôt en cache, World au pas ArduPilot,
-backend en lancement automatique). Le script fait tout lui-même par MAVLink, sur le port de
-secours du SITL (tcp:5762), pendant que Pegasus garde son propre lien sur 14550 :
-
-  1. mode guidé, armement, décollage à 3 m ;
-  2. STATIONNAIRE : 10 s immobile → écart-type et rayon maximal, en centimètres.
-     C'est la mesure qui conditionne toute la lecture de QR ;
-  3. ARRÊT : vitesse commandée à 1 m/s puis zéro → temps et distance pour s'immobiliser.
-     C'est l'inertie réelle du drone ;
-  4. DÉBIT : pas de simulation par seconde (physique à 1/800 s → temps réel = 800 pas/s).
-
+Même scène que sonde_gui.py. Le script pilote seul le drone par MAVLink (le protocole de
+commande des drones), sur le port de secours du SITL (tcp:5762) ; Pegasus garde le sien (14550).
+Mesures : tenue en stationnaire 10 s, arrêt depuis 1 m/s, pas de simulation par seconde ;
+rapport dans resultat_vol.json. DISPLAY est nécessaire (ArduPilot ouvre un terminal) :
   DISPLAY=:1 ~/isaac5_env/bin/python swarm_qr/experiments/05_sitl/vol_auto.py
-  (DISPLAY reste nécessaire : le lancement automatique d'ArduPilot ouvre un terminal.)
 """
 
 from __future__ import annotations
@@ -24,8 +16,8 @@ from pathlib import Path
 
 sys.stdout.reconfigure(line_buffering=True)
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+HERE = Path(__file__).resolve().parent  # dossier du test (resultat_vol.json y est écrit)
+ROOT = HERE.parents[2]                  # racine du projet, ajoutée au chemin d'import (swarm_qr)
 sys.path.insert(0, str(ROOT))
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -53,15 +45,17 @@ from pegasus.simulator.params import ROBOTS, WORLD_SETTINGS  # noqa: E402
 
 from swarm_qr.env.config import WAREHOUSE_PRIM, WAREHOUSE_USD  # noqa: E402
 
-SPAWN = (-5.0, 0.0, 0.10)
-CONTROL_PORT = "tcp:127.0.0.1:5762"
-PHYS_DT = WORLD_SETTINGS["ardupilot"]["physics_dt"]
-GUIDED = 4
+SPAWN = (-5.0, 0.0, 0.10)                            # m (x, y, z) : départ dans l'allée ouest
+CONTROL_PORT = "tcp:127.0.0.1:5762"                  # port MAVLink de secours du SITL
+PHYS_DT = WORLD_SETTINGS["ardupilot"]["physics_dt"]  # s : pas de physique ArduPilot (1/800 s)
+GUIDED = 4                                           # numéro du mode « guidé » d'ArduCopter
 
-REPORT: dict = {}
+REPORT: dict = {}  # rapport, écrit dans resultat_vol.json à la fin, même en cas d'échec
 
 
 def build() -> tuple:
+    """Construit la scène (monde à 1/800 s, entrepôt, sol, drone Iris relié au SITL lancé
+    automatiquement) et renvoie (world, drone)."""
     pg = PegasusInterface()
     pg._world = World(**WORLD_SETTINGS["ardupilot"])
     world = pg.world
@@ -90,17 +84,21 @@ def build() -> tuple:
 
 
 class Pilot:
-    """Commandes MAVLink pendant que la simulation avance : jamais d'attente bloquante."""
+    """Pilote MAVLink minimal, dont chaque attente fait avancer la simulation (jamais bloquante)."""
 
     def __init__(self, world):
+        """Garde le monde à faire avancer ; le lien MAVLink est ouvert plus tard par connect()."""
         self.world = world
         self.mav = None
 
     def pump(self, seconds: float) -> None:
+        """Fait avancer la physique de `seconds` secondes simulées, sans rendu."""
         for _ in range(int(seconds / PHYS_DT)):
             self.world.step(render=False)
 
     def connect(self, timeout_s: float = 60.0) -> bool:
+        """Ouvre le lien MAVLink sur tcp:5762, s'annonce comme station sol et demande les flux ;
+        renvoie vrai si un battement de cœur arrive avant `timeout_s` s (temps réel)."""
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout_s:
             self.pump(1.0)
@@ -126,13 +124,13 @@ class Pilot:
         return False
 
     def drain(self):
+        """Vide les messages MAVLink en attente."""
         while self.mav.recv_match(blocking=False) is not None:
             pass
 
     def wait_ekf(self, timeout_s: float = 150.0) -> bool:
-        """Attendre que l'estimateur ait une position. Deux signaux acceptes : le message
-        « EKF3 IMU0 is using GPS » (la consigne d'INSTRUCTIONS.md), ou un GPS fixe 3D suivi
-        de 20 s de marge. Temps MUR : le SITL vit en temps reel."""
+        """Attend que l'estimateur de position (EKF) soit prêt : message « EKF3 IMU0 is using GPS »
+        ou GPS fixe 3D puis 20 s de marge ; renvoie faux après `timeout_s` s (temps réel)."""
         t0 = time.monotonic()
         fix_since = None
         last_beat = 0.0
@@ -166,6 +164,8 @@ class Pilot:
         return False
 
     def set_guided(self) -> bool:
+        """Demande le mode guidé (10 essais, 1 s simulée chacun) ; renvoie vrai quand le battement
+        de cœur du drone le confirme."""
         for _ in range(10):
             self.mav.mav.set_mode_send(
                 self.mav.target_system, mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, GUIDED
@@ -179,6 +179,8 @@ class Pilot:
         return False
 
     def ack(self, command: int, timeout_s: float = 3.0):
+        """Renvoie le code d'acquittement de `command` (0 = accepté), ou None si rien n'arrive en
+        `timeout_s` s (temps réel)."""
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout_s:
             self.pump(0.1)
@@ -188,6 +190,8 @@ class Pilot:
         return None
 
     def arm(self, attempts: int = 15) -> bool:
+        """Arme les moteurs (jusqu'à `attempts` essais espacés de 2 s simulées) ; renvoie vrai si
+        le drone est armé."""
         for i in range(attempts):
             self.mav.mav.command_long_send(
                 self.mav.target_system, self.mav.target_component,
@@ -201,12 +205,14 @@ class Pilot:
         return False
 
     def takeoff(self, alt: float) -> None:
+        """Envoie l'ordre de décollage jusqu'à `alt` mètres, sans attendre la réponse."""
         self.mav.mav.command_long_send(
             self.mav.target_system, self.mav.target_component,
             mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, alt,
         )
 
     def velocity(self, vx: float, vy: float, vz: float) -> None:
+        """Envoie une consigne de vitesse en m/s, dans le repère NED d'ArduPilot (nord, est, bas)."""
         self.mav.mav.set_position_target_local_ned_send(
             0, self.mav.target_system, self.mav.target_component,
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,
@@ -216,6 +222,8 @@ class Pilot:
 
 
 def main() -> None:
+    """Enchaîne lien, estimateur, mode guidé, armement et décollage à 3 m, puis les trois mesures
+    (stationnaire, arrêt, débit) ; remplit REPORT au fil des étapes."""
     print("[VOL] construction de la scene...")
     world, drone = build()
     omni.timeline.get_timeline_interface().play()
@@ -262,6 +270,7 @@ def main() -> None:
           f"{'DECOLLAGE CONFIRME' if z > 2.5 else 'ECHEC'}")
     if z <= 2.5:
         return
+    # 4 s de stabilisation seulement avant le stationnaire (d'où l'écart-type en X plus fort).
     pilot.pump(4.0)
 
     # --- mesure 1 : stationnaire ---
@@ -281,6 +290,7 @@ def main() -> None:
           f"{np.round(std_cm, 2).tolist()} cm, rayon max = {radius_cm:.1f} cm")
 
     # --- mesure 2 : arret depuis 1 m/s ---
+    # 3 s à 1 m/s, puis consigne nulle jusqu'à moins de 5 cm/s.
     for _ in range(int(3.0 / 0.2)):
         pilot.velocity(1.0, 0.0, 0.0)
         pilot.pump(0.2)

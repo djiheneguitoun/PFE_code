@@ -1,4 +1,8 @@
-"""Configurations d'inventaire procédurales avec split train/val/test gelé (Kirk et al. 2023)."""
+"""Tire les configurations d'inventaire : quels cartons portent un QR, dans chaque entrepôt simulé.
+
+Les numéros de configuration sont répartis en trois ensembles figés (entraînement, validation,
+test ; Kirk et al. 2023) pour mesurer la généralisation sur des cas jamais vus. Utilisé par env_map.py.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +10,14 @@ import torch
 
 from .config_map import LayoutConfig
 
-SPLITS = ("train", "val", "test")
+SPLITS = ("train", "val", "test")  # noms des trois ensembles : entraînement, validation, test
 
 
 class LayoutGenerator:
-    """Tire, par environnement, quels cartons portent un QR actif et lesquels sont pré-lus.
-
-    Chaque configuration est identifiée par un id entier ; les ids des trois splits sont
-    disjoints et les tirages sont déterministes (reproductibles d'une machine à l'autre).
-    """
+    """Générateur reproductible des masques « QR actif » et « QR déjà lu », un tirage par numéro de configuration."""
 
     def __init__(self, cfg: LayoutConfig, n_tags: int, device: torch.device | str):
+        """Réserve des plages de numéros disjointes : 0-499 entraînement, 500-519 validation, 520-539 test."""
         self.cfg = cfg
         self.n_tags = n_tags
         self.device = torch.device(device)
@@ -28,22 +29,25 @@ class LayoutGenerator:
             start += sizes[split]
 
     def config_ids(self, split: str) -> range:
+        """Renvoie la plage des numéros de configuration d'un ensemble ("train", "val" ou "test")."""
         lo, hi = self._ranges[split]
         return range(lo, hi)
 
     def sample_ids(self, n: int, split: str, rng: torch.Generator | None = None) -> torch.Tensor:
+        """Tire au hasard `n` numéros de configuration dans l'ensemble demandé."""
         lo, hi = self._ranges[split]
         ids = torch.randint(lo, hi, (n,), generator=rng, device="cpu")
         return ids.to(self.device)
 
     def masks(self, config_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """(active, preread) booléens de forme (len(ids), n_tags), déterministes par id."""
+        """Renvoie les masques (actif, déjà lu) de forme (nb de numéros, nb de QR) ; même numéro → même tirage."""
         n = config_ids.shape[0]
         active = torch.zeros(n, self.n_tags, dtype=torch.bool, device=self.device)
         preread = torch.zeros(n, self.n_tags, dtype=torch.bool, device=self.device)
         lo_a, hi_a = self.cfg.active_frac
         lo_p, hi_p = self.cfg.preread_frac
         for i, cid in enumerate(config_ids.tolist()):
+            # générateur propre à chaque numéro : tirage identique d'une machine à l'autre
             g = torch.Generator(device="cpu").manual_seed(self.cfg.base_seed + int(cid))
             u = torch.rand(2, generator=g)
             frac_a = lo_a + (hi_a - lo_a) * float(u[0])

@@ -1,20 +1,9 @@
-"""
-Mesure 03 — Combien d'images par seconde le simulateur peut-il produire ?
+"""Mesure 03 — compte combien de pas d'environnement par seconde Isaac Sim produit, caméras allumées.
 
-C'est la question qui décide pour Dreamer. La mesure 02 a montré qu'à `train_ratio` 64,
-l'apprentissage consomme 54 pas d'environnement par seconde. Le simulateur doit suivre,
-avec 2 caméras par drone.
-
-Isaac Sim ne supporte pas de reconstruire une scène dans le même processus : on mesure
-donc UNE configuration par exécution, et `run_all.sh` boucle dessus.
-
-Usage :
+Une configuration par lancement (Isaac Sim ne sait pas reconstruire une scène dans le même processus) ;
+run_all.sh les enchaîne. Ajoute une ligne à resultats.csv. Exemple, depuis la racine du projet :
     PYTHONUNBUFFERED=1 ~/isaac5_env/bin/python experiments/03_render_bench/render_bench.py \
-        --envs 8 --res 64 --kit_args="--/rtx/verifyDriverVersion/enabled=false"
-    bash experiments/03_render_bench/run_all.sh       # le balayage complet
-
-Le drapeau `verifyDriverVersion` évite l'avertissement de pilote : il est connu sur cette
-machine et sans effet sur le rendu (même réglage que `calibrate_gate.py`).
+        --envs 8 --cams 2 --res 64 --steps 60 --kit_args="--/rtx/verifyDriverVersion/enabled=false"
 """
 
 import argparse
@@ -23,15 +12,17 @@ import time
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--envs", type=int, default=8)
-parser.add_argument("--res", type=int, default=64)
-parser.add_argument("--cams", type=int, default=2)
-parser.add_argument("--steps", type=int, default=60)
+parser.add_argument("--envs", type=int, default=8)  # nombre de copies de la scène simulées ensemble
+parser.add_argument("--res", type=int, default=64)  # côté des images carrées, en pixels
+parser.add_argument("--cams", type=int, default=2)  # caméras par environnement : 1, ou 2 si >= 2
+parser.add_argument("--steps", type=int, default=60)  # pas chronométrés, après 20 pas de chauffe
 
+# Isaac Lab doit démarrer l'application Isaac Sim avant tout autre import d'Isaac.
 from isaaclab.app import AppLauncher  # noqa: E402
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# Toujours sans fenêtre et caméras activées, quelles que soient les options données.
 args.headless = True
 args.enable_cameras = True
 
@@ -45,9 +36,11 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg  # noqa: E402
 from isaaclab.sensors import TiledCamera, TiledCameraCfg  # noqa: E402
 from isaaclab.utils import configclass  # noqa: E402
 
-OUT = Path(__file__).parent
-CSV = OUT / "resultats.csv"
+OUT = Path(__file__).parent  # dossier du script
+CSV = OUT / "resultats.csv"  # chaque lancement y ajoute une ligne
 
+# Réglages communs des caméras : image RGB carrée de --res px, champ horizontal de 60°
+# (focale 12, ouverture 13,86), objets vus de 0,1 à 30 m.
 CAM_COMMON = dict(
     data_types=["rgb"],
     spawn=sim_utils.PinholeCameraCfg(
@@ -59,6 +52,7 @@ CAM_COMMON = dict(
 
 
 def _rack(name, x, color):
+    """Renvoie la config d'un « rack » : bloc fixe de 0,6 × 4 × 3 m centré en (x, 0, 1,5 m), de couleur `color` (RGB 0-1)."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/" + name,
         spawn=sim_utils.CuboidCfg(
@@ -73,7 +67,8 @@ def _rack(name, x, color):
 
 @configclass
 class BenchSceneCfg(InteractiveSceneCfg):
-    """Sol, lumière, deux rangées de racks à regarder, caméras latérales."""
+    """Scène du banc : sol et lumière communs ; par environnement, deux racks (x = ±1,5 m) et une caméra gauche.
+    La caméra droite est ajoutée par main() quand --cams vaut 2."""
 
     ground = AssetBaseCfg(prim_path="/World/ground", spawn=sim_utils.GroundPlaneCfg())
     dome = AssetBaseCfg(prim_path="/World/Light",
@@ -89,6 +84,8 @@ class BenchSceneCfg(InteractiveSceneCfg):
 
 
 def main():
+    """Construit la scène, fait 20 pas de chauffe, vérifie l'image, chronomètre --steps pas et ajoute le résultat au CSV."""
+    # environnements espacés de 8 m
     cfg = BenchSceneCfg(num_envs=args.envs, env_spacing=8.0, replicate_physics=True)
     if args.cams >= 2:
         cfg.cam_right = TiledCameraCfg(
@@ -99,9 +96,11 @@ def main():
         )
 
     def mark(msg):
+        """Affiche tout de suite l'heure et l'étape en cours, pour suivre le démarrage d'Isaac."""
         print(f"[ÉTAPE] {time.strftime('%H:%M:%S')} {msg}", flush=True)
 
     mark("création du contexte de simulation")
+    # pas physique de 1/120 s, une image rendue à chaque pas
     sim = sim_utils.SimulationContext(
         sim_utils.SimulationCfg(dt=1 / 120, device="cuda:0", render_interval=1)
     )
@@ -120,7 +119,7 @@ def main():
         if i in (0, 1, 4, 9):
             mark(f"  pas de chauffe {i + 1}/20 fait")
 
-    # vérification que le rendu produit vraiment quelque chose
+    # vérification que le rendu produit vraiment quelque chose : part des pixels de valeur > 8 (sur 255)
     rgb = cams[0].data.output["rgb"]
     non_noir = float((rgb > 8).float().mean())
     print(f"\n[VÉRIF] image {tuple(rgb.shape)} | pixels non noirs : {non_noir:.1%} "
@@ -139,6 +138,7 @@ def main():
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - t0
 
+    # mémoire vue par PyTorch seulement : celle de TiledCamera n'y est pas (colonne vram_gb inutilisable)
     peak = torch.cuda.max_memory_allocated() / 2 ** 30
     env_sps = args.envs * args.steps / elapsed
     row = dict(envs=args.envs, res=args.res, cams=len(cams),

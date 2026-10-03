@@ -1,9 +1,18 @@
 #!/bin/bash
+# Phase 06 : lance N drones Iris (3 par défaut) dans un entrepôt Gazebo, chacun piloté par sa propre instance
+# ArduPilot SITL (le pilote automatique ArduPilot simulé sur le PC). Crée models/iris_instance_<i> (modèle iris
+# + LiDAR, ports propres), génère worlds/warehouse_drones.sdf, puis démarre Gazebo et les SITL.
+# Usage : bash scripts/06_launch_multi_drones.sh [N_DRONES]  — une question choisit le rendu ; Ctrl+C arrête tout.
+# Ensuite, dans un autre terminal : 07_multi_drone_flight.py ou 07b_dynamic_flight.py (MAVLink tcp:127.0.0.1:5760+10·i).
 set -e
 
+# Nombre de drones (1er argument, 3 par défaut).
 N_DRONES=${1:-3}
+# Écart entre deux drones au départ, le long de l'axe x (m).
 DRONE_SPACING=3      
 
+# Racine du projet sur la machine Linux, ArduPilot, plugin ardupilot_gazebo et son modèle iris,
+# dossier des copies de modèles (models/ du projet) et monde généré (worlds/).
 WORKSPACE="$HOME/simulation_mc02"
 ARDUPILOT_DIR="$HOME/ardupilot"
 PLUGIN_DIR="$HOME/ardupilot_gazebo"
@@ -16,6 +25,7 @@ echo "=============================================="
 echo " [6] Multi-Drones : $N_DRONES drones"
 echo "=============================================="
 
+# Vérifie les prérequis : ArduPilot, modèle iris du plugin ardupilot_gazebo, dossier worlds/.
 if [ ! -d "$ARDUPILOT_DIR" ]; then
     echo "ERREUR : ArudPilot non trouvé dans $ARDUPILOT_DIR"
     echo "Lance d'abord le script 03_install_px4_sitl.sh"
@@ -44,6 +54,7 @@ pkill -f mavproxy 2>/dev/null || true
 pkill -f sim_vehicle 2>/dev/null || true
 sleep 2
 
+# Indique à Gazebo où trouver le plugin ArduPilot (build/) ainsi que les modèles et les mondes.
 export GZ_SIM_SYSTEM_PLUGIN_PATH=$PLUGIN_DIR/build:$GZ_SIM_SYSTEM_PLUGIN_PATH
 export GZ_SIM_RESOURCE_PATH=$MODELS_DIR:$PLUGIN_DIR/models:$PLUGIN_DIR/worlds:$WORKSPACE/worlds:$GZ_SIM_RESOURCE_PATH
 
@@ -51,7 +62,7 @@ export GZ_SIM_RESOURCE_PATH=$MODELS_DIR:$PLUGIN_DIR/models:$PLUGIN_DIR/worlds:$W
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 
-# Auto-détection du display X11 
+# Si DISPLAY ne répond pas, essaie les écrans X11 existants (/tmp/.X11-unix).
 if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
     for sock in /tmp/.X11-unix/X*; do
         d=":${sock##*/tmp/.X11-unix/X}"
@@ -63,7 +74,8 @@ if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
     done
 fi
 
-# Créer les copies du modèle iris 
+# Crée une copie du modèle iris par drone (models/iris_instance_<i>, effacée puis recréée à chaque lancement).
+# Ports FDM (échange capteurs / moteurs entre Gazebo et le SITL) : 9002 + 10·i en entrée, 9003 + 10·i en sortie.
 echo ""
 echo "Création des modèles iris pour $N_DRONES drones..."
 
@@ -77,16 +89,16 @@ for i in $(seq 0 $((N_DRONES - 1))); do
     rm -rf "$MODEL_DEST"
     cp -r "$IRIS_MODEL_SRC" "$MODEL_DEST"
 
-    # Modifier les ports dans model.sdf
+    # Change les ports FDM dans model.sdf.
     sed -i "s|<fdm_port_in>[0-9]\+</fdm_port_in>|<fdm_port_in>$PORT_IN</fdm_port_in>|g" \
         "$MODEL_DEST/model.sdf"
     sed -i "s|<fdm_port_out>[0-9]\+</fdm_port_out>|<fdm_port_out>$PORT_OUT</fdm_port_out>|g" \
         "$MODEL_DEST/model.sdf"
 
-    # Mettre à jour le nom dans model.config
+    # Renomme le modèle dans model.config.
     sed -i "s|<name>[^<]*</name>|<name>$MODEL_NAME</name>|" "$MODEL_DEST/model.config"
 
-    # Injecter le capteur LiDAR (gpu_lidar) pour l'exploration
+    # Ajoute un LiDAR 2D (gpu_lidar : 360 rayons sur 360°, portée 0,08 à 10 m, 5 Hz) s'il n'y est pas déjà.
     python3 -c "
 sdf = open('$MODEL_DEST/model.sdf').read()
 lidar = '''
@@ -143,7 +155,8 @@ if 'lidar_link' not in sdf:
     echo "  Drone $i : $MODEL_NAME (fdm_in=$PORT_IN, fdm_out=$PORT_OUT, +LiDAR)"
 done
 
-# Générer le monde SDF : Warehouse + N drones
+# Écrit le monde SDF : entrepôt de 30 × 20 m (murs de 6 m, ouverture de 12 m au sud), 4 étagères de 6 × 1,2 × 3 m,
+# 2 caisses et un éclairage, puis ajoute un <include> par drone.
 echo ""
 echo "Génération du monde warehouse_drones.sdf ($N_DRONES drones)..."
 
@@ -350,6 +363,7 @@ cat > "$GENERATED_WORLD" << 'HEADER'
 HEADER
 
 # --- Ajouter les drones ---
+# Abscisse du premier drone (m), pour centrer la rangée sur x = 0 ; chaque drone part à z = 0,195 m.
 START_X=$(echo "scale=2; -(($N_DRONES - 1) * $DRONE_SPACING) / 2" | bc)
 
 echo "  Positions des drones (espacement ${DRONE_SPACING}m) :"
@@ -386,6 +400,7 @@ echo ""
 read -p "Choix [1/2, défaut=2] : " RENDER_CHOICE
 RENDER_CHOICE=${RENDER_CHOICE:-2}
 
+# Choix 2 (par défaut) : Gazebo sans fenêtre (option -s : serveur seul).
 if [ "$RENDER_CHOICE" = "2" ]; then
     GZ_HEADLESS="-s"
     echo "Mode headless activé."
@@ -393,8 +408,10 @@ else
     GZ_HEADLESS=""
 fi
 
+# PID des processus lancés (Gazebo, SITL), pour pouvoir les arrêter.
 PIDS=()
 
+# Arrête Gazebo et toutes les instances SITL puis quitte ; appelée sur Ctrl+C ou SIGTERM.
 cleanup() {
     echo ""
     echo "========================================"
@@ -413,7 +430,7 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-# Lancer Gazebo
+# Lance Gazebo en arrière-plan (-r : simulation démarrée tout de suite), puis attend 15 s.
 echo ""
 echo "==> Lancement de Gazebo avec $N_DRONES drones dans le warehouse..."
 echo ""
@@ -424,14 +441,15 @@ PIDS+=($!)
 echo "Attente du démarrage de Gazebo (15s)..."
 sleep 15
 
-# Lancer les instances ArduPilot SITL
+# Lance un SITL ArduCopter par drone : -I i décale ses ports de 10·i (MAVLink sur tcp:127.0.0.1:5760 + 10·i),
+# --model JSON le relie au plugin ArduPilot de Gazebo ; 8 s d'attente entre deux drones.
 echo ""
 echo "==> Lancement de $N_DRONES instances ArduPilot SITL..."
 echo ""
 
 cd "$ARDUPILOT_DIR"
 
-# Charger le profil ArduPilot
+# Charge ~/.profile, où l'installation d'ArduPilot ajoute sim_vehicle.py au PATH.
 . ~/.profile 2>/dev/null || true
 
 for i in $(seq 0 $((N_DRONES - 1))); do
@@ -451,6 +469,7 @@ for i in $(seq 0 $((N_DRONES - 1))); do
     sleep 8
 done
 
+# Affiche l'adresse MAVLink de chaque drone, puis attend la fin des processus (Ctrl+C pour tout arrêter).
 echo ""
 echo "============================================================"
 echo "  $N_DRONES DRONES ACTIFS DANS LE WAREHOUSE !"

@@ -1,4 +1,8 @@
-"""Les QR codes des cartons : les POSER sur les cartons + donner leur POSITION pour la lecture."""
+"""QR des cartons : trouve les cartons de l'entrepôt, y colle un QR unique (2 faces) et donne la position de chaque QR.
+
+Utilisé par env.py (positions pour la règle « QR lu »), tests/test_qr_placement.py et diag/test_qr_attach.py (pose des images).
+Les images sont écrites dans assets/qr/ (CARTON_0000.png, CARTON_0001.png… une par carton).
+"""
 
 import os
 import re
@@ -7,24 +11,24 @@ import qrcode
 from PIL import Image
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
-QR_DIR = os.path.join(os.path.dirname(__file__), "assets", "qr")
-CARTON_RE = re.compile(r"SM_CardBox", re.I)
-FACES = [(0, 1), (0, -1)]  # avant / arrière (axe X) — pas gauche/droite
+QR_DIR = os.path.join(os.path.dirname(__file__), "assets", "qr")  # dossier des images QR générées
+CARTON_RE = re.compile(r"SM_CardBox", re.I)  # motif du nom des cartons dans le fichier de l'entrepôt
+FACES = [(0, 1), (0, -1)]  # (axe, sens) des faces à QR : avant / arrière (axe X local) — pas gauche/droite
 
 
 def find_cartons(stage):
-    """Trouve tous les cartons (les prims nommés SM_CardBox*) dans la scène."""
+    """Renvoie la liste des cartons de la scène (objets Xform dont le nom contient SM_CardBox)."""
     return [p for p in stage.Traverse() if p.GetTypeName() == "Xform" and CARTON_RE.search(p.GetName())]
 
 
 def _make_qr_png(data, path):
-    """Génère l'image PNG d'un QR (en couleur RGB) à partir d'un texte (l'ID du carton)."""
+    """Génère l'image PNG (RGB) d'un QR qui encode le texte data (l'identifiant du carton) et l'écrit dans path."""
     qrcode.make(data).save(path)
     Image.open(path).convert("RGB").save(path)
 
 
 def _qr_material(stage, mat_path, png):
-    """Crée le matériau qui affiche l'image QR sur une surface (noir/blanc bien contrasté)."""
+    """Crée et renvoie le matériau qui affiche l'image QR (couleur et émission tirées de l'image : lisible même mal éclairé)."""
     mat = UsdShade.Material.Define(stage, mat_path)
     shader = UsdShade.Shader.Define(stage, mat_path + "/Shader")
     shader.CreateIdAttr("UsdPreviewSurface")
@@ -46,18 +50,21 @@ def _qr_material(stage, mat_path, png):
 
 
 def _add_face_quad(stage, base_path, idx, lo, hi, axis, sign, mat):
-    """Colle un petit panneau plat (avec le QR) sur UNE face du carton."""
+    """Colle sur une face du carton un panneau carré QRTag_<idx> portant le QR (côté = 80 % du plus petit côté de la face)."""
     quad = UsdGeom.Mesh.Define(stage, f"{base_path}/QRTag_{idx}")
     a0, a1 = [i for i in range(3) if i != axis]
     c0, c1 = (lo[a0] + hi[a0]) / 2.0, (lo[a1] + hi[a1]) / 2.0
     half = 0.4 * min(hi[a0] - lo[a0], hi[a1] - lo[a1])
+    # panneau légèrement décollé de la face (0,01 en unités du carton) pour ne pas se confondre avec elle
     coord = (hi[axis] if sign > 0 else lo[axis]) + sign * 0.01
 
     def pt(d0, d1):
+        """Renvoie le sommet du panneau situé à (d0, d1) demi-côtés du centre de la face."""
         p = [0.0, 0.0, 0.0]
         p[axis], p[a0], p[a1] = coord, c0 + d0 * half, c1 + d1 * half
         return Gf.Vec3f(*p)
 
+    # sur la face opposée, sommets pris en miroir : l'image vue de l'extérieur n'est pas inversée
     pts = [pt(-1, -1), pt(1, -1), pt(1, 1), pt(-1, 1)] if sign > 0 else [pt(1, -1), pt(-1, -1), pt(-1, 1), pt(1, 1)]
     quad.CreatePointsAttr(pts)
     quad.CreateFaceVertexCountsAttr([4])
@@ -75,7 +82,7 @@ def _add_face_quad(stage, base_path, idx, lo, hi, axis, sign, mat):
 
 
 def _attach_qr(stage, prim, png):
-    """Pose le QR d'un carton sur ses 2 faces (avant + arrière)."""
+    """Colle le QR d'un carton sur ses 2 faces avant et arrière (ne fait rien si c'est déjà fait)."""
     base = prim.GetPath().pathString
     if stage.GetPrimAtPath(base + "/QRTag_0").IsValid():
         return
@@ -88,7 +95,7 @@ def _attach_qr(stage, prim, png):
 
 
 def carton_qr_world_poses(stage, cartons):
-    """Donne la position + l'orientation (monde) de chaque QR — pour savoir si le drone le voit."""
+    """Renvoie (positions, normales) en repère monde : centre et normale de chaque face à QR, 2 par carton, dans l'ordre des cartons."""
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
     xcache = UsdGeom.XformCache()
     positions, normals = [], []
@@ -112,7 +119,7 @@ def carton_qr_world_poses(stage, cartons):
 
 
 def attach_qr_to_cartons(stage, limit=None):
-    """Pose un QR unique sur CHAQUE carton de l'entrepôt (génère l'image + colle les panneaux)."""
+    """Génère et colle un QR unique (CARTON_0000…) sur chaque carton, ou les limit premiers ; renvoie {identifiant: chemin du carton}."""
     os.makedirs(QR_DIR, exist_ok=True)
     cartons = find_cartons(stage)
     if limit:

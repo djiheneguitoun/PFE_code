@@ -1,4 +1,8 @@
-"""Liste les objets/cartons de l'entrepôt USD (lecture seule, ne modifie rien)."""
+"""Liste les objets de l'entrepôt USD : catalogue des noms, cartons candidats, position et taille de 8 d'entre eux (lecture seule).
+
+Utile pour retrouver le motif de nom des cartons (SM_CardBox) utilisé par qr_task.py.
+Lancement depuis la racine : bash rl_inventory/launch.sh rl_inventory/diag/find_cartons.py --headless
+"""
 
 import argparse
 
@@ -16,6 +20,7 @@ from collections import Counter
 import omni.usd
 from pxr import Usd, UsdGeom
 
+# entrepôt : variable AIF_FACTORY_USD, sinon fichier du serveur public de NVIDIA
 USD = os.getenv(
     "AIF_FACTORY_USD",
     "http://omniverse-content-production.s3-us-west-2.amazonaws.com/"
@@ -28,6 +33,7 @@ prims = list(stage.Traverse())
 
 
 def base_name(name):
+    """Renvoie le nom sans ses suffixes numériques (« SM_CardBox_01_3 » → « SM_CardBox »)."""
     return re.sub(r"(_\d+)+$", "", name)
 
 

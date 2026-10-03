@@ -1,8 +1,8 @@
-"""Génération des images de QR et collage sur les faces des cartons.
+"""Fabrique les images des QR et les colle sur deux faces de chaque carton gardé ; renvoie la position vraie de chaque panneau.
 
-La charge utile fait exactement 7 caractères pour tenir en version 1 (21 modules) avec la
-correction d'erreur la plus forte. Un identifiant plus long ferait passer en version 2, soit
-25 modules, donc des modules 16 % plus fins et plus durs à lire de loin.
+Le texte fait 7 caractères (BOX_000) pour tenir en version 1 (21 × 21 modules) avec la plus forte correction d'erreur :
+un texte plus long passerait en version 2 (25 modules), donc des modules 16 % plus fins, plus durs à lire de loin.
+Appelé par scene.py pendant la construction de la scène.
 """
 
 from __future__ import annotations
@@ -15,11 +15,12 @@ from qrcode.constants import ERROR_CORRECT_H
 
 from .config import QR_CFG
 
-ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "qr"
+ASSET_DIR = Path(__file__).resolve().parents[1] / "assets" / "qr"   # images PNG des QR : swarm_qr/assets/qr
 
 
 @dataclass(frozen=True)
 class TagPose:
+    """Un QR collé : son texte, son carton, la position et la normale de son centre dans le monde, et son côté."""
     tag_id: str
     box_path: str
     position: tuple[float, float, float]
@@ -28,10 +29,12 @@ class TagPose:
 
 
 def payload(index: int) -> str:
+    """Renvoie le texte encodé dans le QR numéro `index` (ex. BOX_007)."""
     return QR_CFG.payload_fmt.format(index)
 
 
 def generate_images(count: int, out_dir: Path = ASSET_DIR) -> dict[str, Path]:
+    """Crée les images PNG de `count` QR (version 1, correction H) et renvoie {texte: chemin} ; erreur si un texte dépasse la version 1."""
     out_dir.mkdir(parents=True, exist_ok=True)
     made = {}
     for i in range(count):
@@ -48,6 +51,7 @@ def generate_images(count: int, out_dir: Path = ASSET_DIR) -> dict[str, Path]:
 
 
 def _material(stage, path: str, png: Path):
+    """Crée et renvoie un matériau USD qui affiche l'image `png` : aspect mat, couleur diffuse et émissive tirées de l'image."""
     from pxr import Sdf, UsdShade
 
     mat = UsdShade.Material.Define(stage, path)
@@ -74,6 +78,7 @@ def _material(stage, path: str, png: Path):
 
 
 def _local_bounds(prim):
+    """Renvoie les coins min et max de la boîte englobante du carton, dans son propre repère."""
     from pxr import Usd, UsdGeom
 
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
@@ -82,6 +87,7 @@ def _local_bounds(prim):
 
 
 def _add_panel(stage, box_path: str, idx: int, lo, hi, axis: int, sign: int, mat):
+    """Ajoute au carton un carré texturé, centré sur sa face (axe `axis`, sens `sign`) et légèrement décollé ; renvoie son côté."""
     from pxr import Gf, Sdf, UsdGeom, UsdShade
 
     a0, a1 = [i for i in range(3) if i != axis]
@@ -90,6 +96,7 @@ def _add_panel(stage, box_path: str, idx: int, lo, hi, axis: int, sign: int, mat
     coord = (hi[axis] if sign > 0 else lo[axis]) + sign * QR_CFG.offset
 
     def pt(d0, d1):
+        """Renvoie le point de la face décalé de (d0, d1) demi-côtés depuis son centre."""
         p = [0.0, 0.0, 0.0]
         p[axis], p[a0], p[a1] = coord, c0 + d0 * half, c1 + d1 * half
         return Gf.Vec3f(*p)
@@ -114,7 +121,8 @@ def _add_panel(stage, box_path: str, idx: int, lo, hi, axis: int, sign: int, mat
 
 
 def attach(stage, box_paths: list[str], images: dict[str, Path]) -> list[TagPose]:
-    """Colle un QR sur chaque face déclarée des cartons et renvoie la pose réelle des panneaux."""
+    """Colle le QR de chaque carton (BOX_000 pour le premier dans l'ordre alphabétique…) sur ses faces déclarées.
+    Les deux faces portent le même code ; renvoie la position et la normale vraies de chaque panneau dans le monde."""
     from pxr import Gf, Usd, UsdGeom
 
     xcache = UsdGeom.XformCache()
