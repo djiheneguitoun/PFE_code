@@ -1,0 +1,66 @@
+{
+  "socle": "pegasus+ardupilot_sitl",
+  "tag": "BOX_000",
+  "tag_size_m": 0.4,
+  "distances": [
+    {
+      "distance": 0.5,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [],
+      "err_pos_m": 0.106
+    },
+    {
+      "distance": 0.8,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [],
+      "err_pos_m": 0.037
+    },
+    {
+      "distance": 1.1,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [],
+      "err_pos_m": 0.081
+    },
+    {
+      "distance": 1.5,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [
+        "BOX_001"
+      ],
+      "err_pos_m": 0.042
+    },
+    {
+      "distance": 2.0,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [
+        "BOX_001"
+      ],
+      "err_pos_m": 0.044
+    },
+    {
+      "distance": 3.0,
+      "atteint": true,
+      "cible_lue": true,
+      "voisins_lus": [
+        "BOX_002",
+        "BOX_001"
+      ],
+      "err_pos_m": 0.039
+    }
+  ],
+  "portee_max_m": 3.0,
+  "qr_lus_en_vol": [
+    "BOX_000",
+    "BOX_001",
+    "BOX_002",
+    "BOX_003",
+    "BOX_004",
+    "BOX_018"
+  ],
+  "images_video": 52
+}

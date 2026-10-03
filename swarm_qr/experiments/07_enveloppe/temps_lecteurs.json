@@ -1,0 +1,38 @@
+{
+  "zxing": {
+    "images": 400,
+    "median_ms": 4.4,
+    "moyen_ms": 5.4,
+    "p90_ms": 8.1
+  },
+  "zbar": {
+    "images": 400,
+    "median_ms": 53.9,
+    "moyen_ms": 53.6,
+    "p90_ms": 86.2
+  },
+  "opencv": {
+    "images": 400,
+    "median_ms": 126.1,
+    "moyen_ms": 144.3,
+    "p90_ms": 239.2
+  },
+  "opencv_aruco": {
+    "images": 400,
+    "median_ms": 110.4,
+    "moyen_ms": 108.4,
+    "p90_ms": 150.0
+  },
+  "opencv_aruco_x3": {
+    "images": 400,
+    "median_ms": 571.1,
+    "moyen_ms": 602.8,
+    "p90_ms": 917.2
+  },
+  "pyboof": {
+    "images": 400,
+    "median_ms": 356.9,
+    "moyen_ms": 455.3,
+    "p90_ms": 1076.3
+  }
+}

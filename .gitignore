@@ -1,0 +1,55 @@
+docs/doc.md
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+# (pas de règle « env/ » : swarm_qr/env/ est du code source)
+
+# --- Éditeurs / système -----------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Sorties d'entraînement (RL, YOLO) : checkpoints + logs TensorBoard -----
+qr_inventory_swarm/
+runs/
+outputs/
+swarmscan_runs
+
+# --- Poids de modèles : exclus par défaut... --------------------------------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+# ...sauf nos deux modèles entraînés, nécessaires pour relancer le système
+!swarm_qr/assets/detecteur/detecteur.pt
+!swarm_qr/experiments/12_guide/adaptateur_lora/adapter_model.safetensors
+
+# --- Vidéos : à partager par lien (Drive / Release), pas dans git -----------
+*.mp4
+video/
+# ...sauf les petites démos (< 3 Mo) citées dans les RESULTATS.md
+!swarm_qr/experiments/03_images_qr/vol_le_long_du_rack.mp4
+!swarm_qr/experiments/09_carte/carte_qui_se_remplit.mp4
+!swarm_qr/experiments/10_detecteur/vol*/carte_qui_se_remplit.mp4
+
+# --- Journaux de vol et instantanés des missions ----------------------------
+ardupilot_logs/
+*.BIN
+*.tlog
+instantanes/
+brouillon.json
+
+# --- Jeux d'images (régénérables par les bancs) -----------------------------
+swarm_qr/experiments/07_enveloppe/images_*/
+swarm_qr/experiments/10_detecteur/jeu/
+
+# --- Images QR régénérées à chaque construction de scène --------------------
+swarm_qr/assets/qr/
+rl_inventory/assets
