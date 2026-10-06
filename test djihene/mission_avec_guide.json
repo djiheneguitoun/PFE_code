@@ -1,0 +1,296 @@
+{
+ "_a_lire": "EXEMPLE FABRIQUÉ, pas un vrai vol. Base : les 8 premières décisions du test nominal (tests of system/eval_nominal/mission.json). Le guide n'y était pas activé ; ici on fait comme si le vol avait été lancé avec --guide entraine --lam 1, et les zones choisies par le guide sont tirées au hasard parmi les vraies zones candidates. Les 3 premières décisions (t = 85,9 à 87,0 s) gardent \"avis\": null car le guide n'a pas encore répondu (il répond au plus tôt 5 s après la demande). Chaque réponse du guide écrit un événement \"avis\" (toutes les 5 s par drone) ; chaque décision recopie dans \"avis\" le dernier avis reçu par son drone. La note n'a pas changé : aucune de ces cibles n'est dans la zone conseillée (sinon le code ajoute +10, et +5 si la cible est aussi du côté conseillé). Le reste de chaque décision (cible, fin, lu...) est celui du vrai vol.",
+ "seed": 9033,
+ "drones": 3,
+ "budget_s": 600.0,
+ "arret": {
+  "codes_attendus": 228,
+  "part": 0.95,
+  "grace_s": 60.0,
+  "sans_progres_s": 120.0
+ },
+ "detecteur": "auto",
+ "guide": "entraine",
+ "lam": 1.0,
+ "panne": "",
+ "evenements": [
+  {
+   "t": 90.9,
+   "genre": "avis",
+   "drone": 0,
+   "zone": "zone 2, cote sud ('ANSWER: 2')"
+  },
+  {
+   "t": 90.9,
+   "genre": "avis",
+   "drone": 1,
+   "zone": "zone 5, cote est ('ANSWER: 5')"
+  },
+  {
+   "t": 90.9,
+   "genre": "avis",
+   "drone": 2,
+   "zone": "zone 1, cote nord ('ANSWER: 1')"
+  },
+  {
+   "t": 95.9,
+   "genre": "avis",
+   "drone": 0,
+   "zone": "zone 3, cote est ('ANSWER: 3')"
+  },
+  {
+   "t": 95.9,
+   "genre": "avis",
+   "drone": 1,
+   "zone": "zone 1, cote nord ('ANSWER: 1')"
+  },
+  {
+   "t": 95.9,
+   "genre": "avis",
+   "drone": 2,
+   "zone": "zone 4, cote est ('ANSWER: 4')"
+  },
+  {
+   "t": 100.9,
+   "genre": "avis",
+   "drone": 0,
+   "zone": "zone 4, cote sud ('ANSWER: 4')"
+  },
+  {
+   "t": 100.9,
+   "genre": "avis",
+   "drone": 1,
+   "zone": "zone 4, cote sud ('ANSWER: 4')"
+  },
+  {
+   "t": 100.9,
+   "genre": "avis",
+   "drone": 2,
+   "zone": "zone 6, cote nord ('ANSWER: 6')"
+  },
+  {
+   "t": 105.9,
+   "genre": "avis",
+   "drone": 0,
+   "zone": "zone 4, cote sud ('ANSWER: 4')"
+  },
+  {
+   "t": 105.9,
+   "genre": "avis",
+   "drone": 1,
+   "zone": "zone 2, cote est ('ANSWER: 2')"
+  },
+  {
+   "t": 105.9,
+   "genre": "avis",
+   "drone": 2,
+   "zone": "zone 1, cote est ('ANSWER: 1')"
+  }
+ ],
+ "agents": [
+  {
+   "i": 0,
+   "vivant": true,
+   "decisions": [
+    {
+     "t": 85.9,
+     "genre": "couvrir",
+     "position": [
+      -4.5,
+      15.84,
+      1.86
+     ],
+     "origine": [
+      -4.5,
+      17.84,
+      1.75
+     ],
+     "cote": 3,
+     "note": 6.7,
+     "distance": 1.3,
+     "points": 0,
+     "avis": null,
+     "fin": 91.4,
+     "phase": "atteint",
+     "lu": false,
+     "raison": ""
+    },
+    {
+     "t": 91.4,
+     "genre": "lire",
+     "position": [
+      -0.12,
+      11.53,
+      1.66
+     ],
+     "origine": [
+      -2.12,
+      11.53,
+      1.55
+     ],
+     "cote": 0,
+     "note": 23.8,
+     "distance": 6.2,
+     "points": 0,
+     "avis": "zone 2, cote sud ('ANSWER: 2')",
+     "fin": 104.6,
+     "phase": "atteint",
+     "lu": true,
+     "raison": ""
+    },
+    {
+     "t": 104.6,
+     "genre": "lire",
+     "position": [
+      -3.83,
+      11.11,
+      1.66
+     ],
+     "origine": [
+      -7.33,
+      11.11,
+      1.55
+     ],
+     "cote": 0,
+     "note": 24.5,
+     "distance": 5.5,
+     "points": 3,
+     "avis": "zone 4, cote sud ('ANSWER: 4')",
+     "replanifications": 4,
+     "fin": 116.4,
+     "phase": "atteint",
+     "lu": true,
+     "raison": ""
+    }
+   ]
+  },
+  {
+   "i": 1,
+   "vivant": true,
+   "decisions": [
+    {
+     "t": 86.4,
+     "genre": "couvrir",
+     "position": [
+      -7.62,
+      -7.5,
+      1.86
+     ],
+     "origine": [
+      -10.38,
+      -7.5,
+      1.75
+     ],
+     "cote": 0,
+     "note": 6.1,
+     "distance": 1.9,
+     "points": 0,
+     "avis": null,
+     "fin": 92.4,
+     "phase": "atteint",
+     "lu": false,
+     "raison": ""
+    },
+    {
+     "t": 92.4,
+     "genre": "lire",
+     "position": [
+      0.22,
+      -3.46,
+      3.14
+     ],
+     "origine": [
+      -1.78,
+      -3.46,
+      3.03
+     ],
+     "cote": 0,
+     "note": 21.0,
+     "distance": 9.0,
+     "points": 1,
+     "avis": "zone 5, cote est ('ANSWER: 5')",
+     "replanifications": 1,
+     "fin": 107.4,
+     "phase": "atteint",
+     "lu": true,
+     "raison": ""
+    }
+   ]
+  },
+  {
+   "i": 2,
+   "vivant": true,
+   "decisions": [
+    {
+     "t": 87.0,
+     "genre": "couvrir",
+     "position": [
+      6.38,
+      -0.57,
+      2.44
+     ],
+     "origine": [
+      9.38,
+      -0.57,
+      2.33
+     ],
+     "cote": 1,
+     "note": 1.7,
+     "distance": 3.3,
+     "points": 0,
+     "avis": null,
+     "fin": 95.4,
+     "phase": "atteint",
+     "lu": false,
+     "raison": ""
+    },
+    {
+     "t": 95.4,
+     "genre": "lire",
+     "position": [
+      5.31,
+      2.49,
+      1.67
+     ],
+     "origine": [
+      7.31,
+      2.49,
+      1.56
+     ],
+     "cote": 1,
+     "note": 26.8,
+     "distance": 3.2,
+     "points": 0,
+     "avis": "zone 1, cote nord ('ANSWER: 1')",
+     "fin": 106.0,
+     "phase": "atteint",
+     "lu": true,
+     "raison": ""
+    },
+    {
+     "t": 106.0,
+     "genre": "lire",
+     "position": [
+      5.29,
+      -2.61,
+      3.16
+     ],
+     "origine": [
+      7.29,
+      -2.61,
+      3.05
+     ],
+     "cote": 1,
+     "note": 24.7,
+     "distance": 5.3,
+     "points": 0,
+     "avis": "zone 1, cote est ('ANSWER: 1')",
+     "fin": 119.0,
+     "phase": "atteint",
+     "lu": true,
+     "raison": ""
+    }
+   ]
+  }
+ ]
+}
