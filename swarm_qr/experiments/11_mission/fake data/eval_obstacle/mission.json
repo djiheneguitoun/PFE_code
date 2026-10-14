@@ -1,5 +1,4 @@
 {
- "_donnees_fabriquees": "Donnees fabriquees : avis du guide ajoutes apres coup a un vol fait sans guide. Voir README.md du dossier fake data.",
  "seed": 9033,
  "drones": 3,
  "budget_s": 600.0,
@@ -22,13 +21,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 90.6,
+   "t": 91.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 90.6,
+   "t": 91.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -40,13 +39,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 95.6,
+   "t": 96.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 95.6,
+   "t": 96.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -58,13 +57,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 100.6,
+   "t": 101.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 100.6,
+   "t": 101.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -76,13 +75,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 105.6,
+   "t": 106.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 105.6,
+   "t": 106.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -94,13 +93,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 110.6,
+   "t": 111.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 110.6,
+   "t": 111.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -112,13 +111,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 115.6,
+   "t": 116.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 115.6,
+   "t": 116.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -130,13 +129,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 120.6,
+   "t": 121.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 120.6,
+   "t": 121.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -148,13 +147,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 125.6,
+   "t": 126.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 125.6,
+   "t": 126.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -166,13 +165,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 130.6,
+   "t": 131.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 130.6,
+   "t": 131.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -184,13 +183,13 @@
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 135.6,
+   "t": 136.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote est ('ANSWER: 1')"
   },
   {
-   "t": 135.6,
+   "t": 136.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote est ('ANSWER: 1')"
@@ -199,19 +198,19 @@
    "t": 140.6,
    "genre": "avis",
    "drone": 0,
-   "zone": "zone 1, cote est ('ANSWER: 1')"
+   "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 140.6,
+   "t": 141.0,
    "genre": "avis",
    "drone": 1,
-   "zone": "zone 1, cote est ('ANSWER: 1')"
+   "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 140.6,
+   "t": 141.0,
    "genre": "avis",
    "drone": 2,
-   "zone": "zone 1, cote est ('ANSWER: 1')"
+   "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
    "t": 145.6,
@@ -220,13 +219,13 @@
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 145.6,
+   "t": 146.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 145.6,
+   "t": 146.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
@@ -235,19 +234,19 @@
    "t": 150.6,
    "genre": "avis",
    "drone": 0,
-   "zone": "zone 6, cote ouest ('ANSWER: 6')"
+   "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 150.6,
+   "t": 151.0,
    "genre": "avis",
    "drone": 1,
-   "zone": "zone 6, cote ouest ('ANSWER: 6')"
+   "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 150.6,
+   "t": 151.0,
    "genre": "avis",
    "drone": 2,
-   "zone": "zone 6, cote ouest ('ANSWER: 6')"
+   "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
    "t": 155.6,
@@ -256,13 +255,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 155.6,
+   "t": 156.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 155.6,
+   "t": 156.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -274,13 +273,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 160.6,
+   "t": 161.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 160.6,
+   "t": 161.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -292,13 +291,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 165.6,
+   "t": 166.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 165.6,
+   "t": 166.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -310,13 +309,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 170.6,
+   "t": 171.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 170.6,
+   "t": 171.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -328,13 +327,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 175.6,
+   "t": 176.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 175.6,
+   "t": 176.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -346,13 +345,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 180.6,
+   "t": 181.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 180.6,
+   "t": 181.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -364,13 +363,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 185.6,
+   "t": 186.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 185.6,
+   "t": 186.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -382,13 +381,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 190.6,
+   "t": 191.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 190.6,
+   "t": 191.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -400,13 +399,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 195.6,
+   "t": 196.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 195.6,
+   "t": 196.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -425,13 +424,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 200.6,
+   "t": 201.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 200.6,
+   "t": 201.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -443,13 +442,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 205.6,
+   "t": 206.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 205.6,
+   "t": 206.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -461,16 +460,16 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 210.6,
+   "t": 211.0,
    "genre": "avis",
    "drone": 1,
-   "zone": "zone 1, cote ouest ('ANSWER: 1')"
+   "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 210.6,
+   "t": 211.0,
    "genre": "avis",
    "drone": 2,
-   "zone": "zone 1, cote ouest ('ANSWER: 1')"
+   "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
    "t": 211.2,
@@ -485,13 +484,13 @@
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 215.6,
+   "t": 216.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 215.6,
+   "t": 216.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
@@ -509,16 +508,16 @@
    "zone": "zone 6, cote ouest ('ANSWER: 6')"
   },
   {
-   "t": 220.6,
+   "t": 221.0,
    "genre": "avis",
    "drone": 1,
-   "zone": "zone 6, cote ouest ('ANSWER: 6')"
+   "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 220.6,
+   "t": 221.0,
    "genre": "avis",
    "drone": 2,
-   "zone": "zone 6, cote ouest ('ANSWER: 6')"
+   "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
    "t": 224.4,
@@ -533,13 +532,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 225.6,
+   "t": 226.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 225.6,
+   "t": 226.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -551,13 +550,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 230.6,
+   "t": 231.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 230.6,
+   "t": 231.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -569,13 +568,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 235.6,
+   "t": 236.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 235.6,
+   "t": 236.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -587,13 +586,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 240.6,
+   "t": 241.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 240.6,
+   "t": 241.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -605,13 +604,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 245.6,
+   "t": 246.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 245.6,
+   "t": 246.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -623,13 +622,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 250.6,
+   "t": 251.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 250.6,
+   "t": 251.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -641,13 +640,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 255.6,
+   "t": 256.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 255.6,
+   "t": 256.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -659,13 +658,13 @@
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 260.6,
+   "t": 261.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
   },
   {
-   "t": 260.6,
+   "t": 261.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote nord ('ANSWER: 1')"
@@ -677,13 +676,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 265.6,
+   "t": 266.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 265.6,
+   "t": 266.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -695,13 +694,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 270.6,
+   "t": 271.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 270.6,
+   "t": 271.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -713,13 +712,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 275.6,
+   "t": 276.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 275.6,
+   "t": 276.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -731,13 +730,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 280.6,
+   "t": 281.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 280.6,
+   "t": 281.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -749,13 +748,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 285.6,
+   "t": 286.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 285.6,
+   "t": 286.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -767,13 +766,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 290.6,
+   "t": 291.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 290.6,
+   "t": 291.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -785,13 +784,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 295.6,
+   "t": 296.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 295.6,
+   "t": 296.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -803,13 +802,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 300.6,
+   "t": 301.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 300.6,
+   "t": 301.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -821,13 +820,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 305.6,
+   "t": 306.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 305.6,
+   "t": 306.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -839,13 +838,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 310.6,
+   "t": 311.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 310.6,
+   "t": 311.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -857,13 +856,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 315.6,
+   "t": 316.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 315.6,
+   "t": 316.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -875,13 +874,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 320.6,
+   "t": 321.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 320.6,
+   "t": 321.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -899,13 +898,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 325.6,
+   "t": 326.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 325.6,
+   "t": 326.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -917,13 +916,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 330.6,
+   "t": 331.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 330.6,
+   "t": 331.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -935,13 +934,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 335.6,
+   "t": 336.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 335.6,
+   "t": 336.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -953,13 +952,13 @@
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 340.6,
+   "t": 341.0,
    "genre": "avis",
    "drone": 1,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
   },
   {
-   "t": 340.6,
+   "t": 341.0,
    "genre": "avis",
    "drone": 2,
    "zone": "zone 1, cote ouest ('ANSWER: 1')"
@@ -16483,7 +16482,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 23.5,
+      "note": -976.0,
       "depuis": 1.6
      }
     },
@@ -16511,7 +16510,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 36.5,
+      "note": -1011.8,
       "depuis": 0.2
      }
     },
@@ -24530,7 +24529,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 23.5,
+      "note": -976.0,
       "depuis": 11.6
      }
     },
@@ -24558,7 +24557,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 36.5,
+      "note": -1011.8,
       "depuis": 10.2
      }
     },
@@ -34708,7 +34707,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 43.0,
+      "note": -1000.6,
       "depuis": 5.2
      }
     }
@@ -44799,7 +44798,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 28.6,
+      "note": -1016.0,
       "depuis": 1.6
      }
     },
@@ -54774,7 +54773,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 15.7,
+      "note": -977.9,
       "depuis": 5.4
      }
     },
@@ -54802,7 +54801,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 27.9,
+      "note": -1017.4,
       "depuis": 5.2
      }
     },
@@ -54830,7 +54829,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 42.5,
+      "note": 27.5,
       "depuis": 3.8
      }
     }
@@ -64859,7 +64858,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 15.7,
+      "note": -977.9,
       "depuis": 15.6
      }
     },
@@ -84859,7 +84858,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 23.6,
+      "note": -978.2,
       "depuis": 10.8
      }
     },
@@ -84915,7 +84914,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 27.3,
+      "note": -1016.7,
       "depuis": 2.0
      }
     }
@@ -115535,7 +115534,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 14.8,
+      "note": -981.0,
       "depuis": 3.4
      }
     }
@@ -125972,7 +125971,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 14.8,
+      "note": -981.0,
       "depuis": 13.6
      }
     }
@@ -146935,7 +146934,7 @@
       ],
       "cote": 3,
       "utilite": 9.0,
-      "note": 4.5,
+      "note": -1039.8,
       "depuis": 5.0
      }
     }
@@ -157685,7 +157684,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 25.1,
+      "note": -976.5,
       "depuis": 8.0
      }
     },
@@ -168071,7 +168070,7 @@
       ],
       "cote": 0,
       "utilite": 30.0,
-      "note": 30.0,
+      "note": -1020.3,
       "depuis": 1.2
      }
     },
@@ -168099,7 +168098,7 @@
       ],
       "cote": 0,
       "utilite": 8.0,
-      "note": 5.8,
+      "note": -1054.0,
       "depuis": 1.0
      }
     },
@@ -178271,7 +178270,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 18.2,
+      "note": -1020.9,
       "depuis": 4.6
      }
     },
@@ -188031,7 +188030,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 18.2,
+      "note": -1020.9,
       "depuis": 14.8
      }
     },
@@ -207238,7 +207237,7 @@
       ],
       "cote": 1,
       "utilite": 30.0,
-      "note": 26.4,
+      "note": -1029.9,
       "depuis": 10.2
      }
     },
@@ -216689,7 +216688,7 @@
       ],
       "cote": 2,
       "utilite": 14.0,
-      "note": 8.5,
+      "note": -1002.9,
       "depuis": 10.2
      }
     },
@@ -226200,7 +226199,7 @@
       ],
       "cote": 2,
       "utilite": 8.0,
-      "note": 3.2,
+      "note": -1002.5,
       "depuis": 1.8
      }
     }
@@ -235383,7 +235382,7 @@
       ],
       "cote": 2,
       "utilite": 8.0,
-      "note": 3.2,
+      "note": -1002.5,
       "depuis": 12.0
      }
     }
@@ -257981,7 +257980,7 @@
      "note": 15.7,
      "distance": 14.3,
      "points": 4,
-     "avis": "zone 1, cote est ('ANSWER: 1')",
+     "avis": "zone 6, cote ouest ('ANSWER: 6')",
      "replanifications": 4,
      "fin": 166.2,
      "phase": "atteint",
@@ -271429,7 +271428,7 @@
      "note": 27.9,
      "distance": 2.1,
      "points": 0,
-     "avis": "zone 1, cote est ('ANSWER: 1')",
+     "avis": "zone 6, cote ouest ('ANSWER: 6')",
      "fin": 148.2,
      "phase": "atteint",
      "lu": true,
@@ -271569,7 +271568,7 @@
      "note": 6.6,
      "distance": 1.4,
      "points": 0,
-     "avis": "zone 6, cote ouest ('ANSWER: 6')",
+     "avis": "zone 1, cote nord ('ANSWER: 1')",
      "fin": 234.6,
      "phase": "atteint",
      "lu": false,
@@ -284804,10 +284803,10 @@
       4.48
      ],
      "cote": 0,
-     "note": 42.5,
+     "note": 27.5,
      "distance": 2.5,
      "points": 0,
-     "avis": "zone 1, cote est ('ANSWER: 1')",
+     "avis": "zone 6, cote ouest ('ANSWER: 6')",
      "fin": 151.0,
      "phase": "atteint",
      "lu": true,
@@ -284830,7 +284829,7 @@
      "note": 26.4,
      "distance": 3.6,
      "points": 0,
-     "avis": "zone 6, cote ouest ('ANSWER: 6')",
+     "avis": "zone 1, cote ouest ('ANSWER: 1')",
      "fin": 161.2,
      "phase": "atteint",
      "lu": true,

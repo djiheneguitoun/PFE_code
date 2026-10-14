@@ -44,7 +44,6 @@ ardupilot_logs/
 *.BIN
 *.tlog
 instantanes/
-brouillon.json
 
 # --- Jeux d'images (régénérables par les bancs) -----------------------------
 swarm_qr/experiments/07_enveloppe/images_*/
